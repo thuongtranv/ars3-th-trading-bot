@@ -1,0 +1,42 @@
+# Main bot settings
+coins: ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT"]
+timeframe: "1h"
+initial_capital: 10000
+risk_per_trade: 0.01 # Rủi ro 1% trên mỗi giao dịch
+max_dd_percent: 15
+simulation_mode: True   # True = paper trading, False = live trading
+
+# Exchange settings
+exchange: "binance"
+futures: False # Giao dịch trên thị trường Futures
+testnet: True   # Sử dụng môi trường testnet của sàn
+
+# Strategy settings for RS-75 (Range Scalper)
+# Các thông số này sẽ được nạp vào chiến lược ars3_strategy_rs75.py
+
+rs75_strategy:
+  # --- Tinh chỉnh cơ bản ---
+  bb_period: 20
+  bb_std: 2.5
+  rsi_period: 7
+  adx_period: 14
+  sl_atr_multiplier: 1.7 # Giữ lại để dùng nếu không bật SL theo swing
+  tp_atr_multiplier: 1.2
+
+  # --- Bộ lọc chế độ thị trường ---
+  adx_max: 20           # ADX tối đa để coi là ranging
+  natr_max: 0.0040      # Biến động tối đa (ATR/close)
+  
+  # --- CÁC NÂNG CẤP MỚI (BẬT/TẮT Ở ĐÂY) ---
+  use_confirmation_entry: True # Chờ nến đóng cửa vào trong BB để xác nhận
+  
+  use_smart_sl: True           # SL dựa trên đỉnh/đáy gần nhất
+  swing_period: 10             # Số nến để tìm đỉnh/đáy cho Smart SL
+
+  use_smart_tp: True           # TP1 sẽ là đường BB Midline
+  
+  use_volume_filter: True      # Yêu cầu volume phải cao hơn mức trung bình
+  volume_ma_period: 20         # Chu kỳ MA cho volume
+  
+  use_htf_filter: False        # Lọc theo xu hướng khung thời gian lớn (bật nếu bạn đã code logic lấy data HTF)
+  htf_ma_period: 50            # Chu kỳ MA cho khung HTF

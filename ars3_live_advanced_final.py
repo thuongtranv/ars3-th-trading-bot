@@ -1,19 +1,24 @@
 import pandas as pd
 import os
 import time
+import threading
 from datetime import datetime
 import schedule
 import yaml
 import json
 import requests
 import logging
+import signal
+import sys
+from collections import deque
 from dotenv import load_dotenv
 
-# Import strategy and broker
+# --- IMPORT COMPONENTS ---
 from ars3_broker_ccxt import Broker
-from ars3_strategy_rs75 import generate_signals, DEFAULT_CFG as RS75_DEFAULT_CFG
+from ars3_strategy_rs75 import generate_signals as generate_range_signals, get_strategy_status
+from ars3_strategy_trend import generate_signals as generate_trend_signals
 
-# Setup logging
+# --- SETUP LOGGING ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -24,498 +29,872 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---- Load Environment & Config ----
+# --- LOAD CONFIG AND VALIDATE ---
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-def validate_config(config):
-    """Validate configuration parameters"""
-    required_fields = ["coins", "timeframe", "initial_capital", "risk_per_trade"]
-    for field in required_fields:
-        if field not in config:
-            raise ValueError(f"Missing required config field: {field}")
-    
-    if config["risk_per_trade"] <= 0 or config["risk_per_trade"] > 0.1:
-        raise ValueError("risk_per_trade must be between 0 and 0.1 (10%)")
-    
-    if config["initial_capital"] <= 0:
-        raise ValueError("initial_capital must be positive")
-
 try:
     with open("ars3_config.yaml", "r") as f:
         config = yaml.safe_load(f)
-    validate_config(config)
+    
+    # Bot settings with validation
+    COINS = config.get("coins", ["BTC/USDT"])
+    TIMEFRAME = config.get("timeframe", "1h")
+    HTF_TIMEFRAME = config.get("htf_timeframe", "4h")
+    INITIAL_CAPITAL = float(config.get("initial_capital", 10000))
+    MAX_DD_PERCENT = float(config.get("max_dd_percent", 15))
+    SIMULATION_MODE = config.get("simulation_mode", True)
+    COMMISSION_RATE = float(config.get("commission_rate", 0.0004))
+    MAX_DAILY_LOSS = float(config.get("max_daily_loss", INITIAL_CAPITAL * 0.05))
+    
+    # Strategy configs
+    RANGE_STRATEGY_CONFIG = config.get("rs75_strategy", {})
+    TREND_STRATEGY_CONFIG = config.get("trend_strategy", {})
+    
+    logger.info(f"Configuration loaded: {len(COINS)} symbols, Initial capital: ${INITIAL_CAPITAL:,.2f}")
+    
 except Exception as e:
-    logger.error(f"Configuration error: {e}")
-    raise
+    logger.critical(f"FATAL: Could not load or parse config file: {e}", exc_info=True)
+    exit(1)
 
-# Main bot settings
-COINS = config.get("coins", ["BTC/USDT"])
-TIMEFRAME = config.get("timeframe", "1h")
-INITIAL_CAPITAL = config.get("initial_capital", 10000)
-RISK_PER_TRADE = config.get("risk_per_trade", 0.01)
-MAX_DD_PERCENT = config.get("max_dd_percent", 15)
-SIMULATION_MODE = config.get("simulation_mode", True)
-STRATEGY_CONFIG = config.get("rs75_strategy", RS75_DEFAULT_CFG)
-STRATEGY_CONFIG['risk_pct'] = RISK_PER_TRADE
-
-# ---- Global Variables & Logs ----
-broker = Broker(config_path="ars3_config.yaml")
+# --- GLOBAL VARIABLES WITH THREAD SAFETY ---
+broker = None
 best_coin = None
-equity_log = []
-trades_log = []
+position = {}
 current_balance = INITIAL_CAPITAL
-position = {}  # FIXED: Global position state
+position_lock = threading.RLock()
+balance_lock = threading.RLock()
+daily_pnl = 0.0
+last_reset_date = datetime.now().date()
+shutdown_event = threading.Event()
+system_health = {"status": "initializing", "last_check": datetime.now()}
+
+# Data storage with thread-safe collections
+equity_log = deque(maxlen=config.get("data_management", {}).get("max_equity_records", 10000))
+trades_log = deque(maxlen=config.get("data_management", {}).get("max_trade_records", 5000))
+
 POSITION_FILE = "position.json"
-last_api_call = 0
-MIN_API_INTERVAL = 5.0  # Minimum seconds between API calls
+EMERGENCY_STOP_FILE = config.get("emergency", {}).get("kill_switch_file", "EMERGENCY_STOP")
 
-# ---- Rate limiting decorator ----
-def rate_limit(min_interval=5.0):
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            global last_api_call
-            now = time.time()
-            elapsed = now - last_api_call
-            if elapsed < min_interval:
-                time.sleep(min_interval - elapsed)
-            last_api_call = time.time()
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
+# --- HELPER FUNCTIONS ---
 
-# ---- State Management ----
-def save_position(position_data):
-    """Save position state to JSON file with error handling"""
+def init_broker():
+    """Initialize broker with proper error handling."""
+    global broker
     try:
-        with open(POSITION_FILE, "w") as f:
-            json.dump(position_data, f, indent=4, default=str)
-        logger.info(f"Position saved: {position_data}")
+        broker = Broker(config_path="ars3_config.yaml")
+        if broker:
+            # Test connection
+            test_result = broker.test_connection()
+            if test_result.get("connected", False):
+                logger.info(f"Broker initialized successfully: {test_result.get('message', 'Connected')}")
+                return True
+            else:
+                logger.error(f"Broker connection test failed: {test_result.get('message', 'Unknown error')}")
+                return False
+        return False
     except Exception as e:
-        logger.error(f"Failed to save position: {e}")
+        logger.error(f"Failed to initialize broker: {e}")
+        return False
+
+def save_position(pos_data):
+    """Thread-safe position saving with validation."""
+    try:
+        with position_lock:
+            # Validate position data structure
+            if pos_data and not isinstance(pos_data, dict):
+                logger.error("Invalid position data type")
+                return False
+            
+            # Convert datetime objects to strings for JSON serialization
+            serializable_data = {}
+            for key, value in pos_data.items():
+                if isinstance(value, datetime):
+                    serializable_data[key] = value.isoformat()
+                elif isinstance(value, (int, float, str, bool)) or value is None:
+                    serializable_data[key] = value
+                else:
+                    serializable_data[key] = str(value)
+            
+            with open(POSITION_FILE, "w") as f:
+                json.dump(serializable_data, f, indent=4)
+            
+            logger.debug(f"Position saved: {len(serializable_data)} fields")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to save position: {e}", exc_info=True)
+        return False
 
 def load_position():
-    """Load position state from JSON file"""
-    if os.path.exists(POSITION_FILE):
-        try:
-            with open(POSITION_FILE, "r") as f:
-                pos = json.load(f)
-                logger.info(f"Position loaded: {pos}")
-                return pos
-        except (json.JSONDecodeError, Exception) as e:
-            logger.warning(f"Failed to load position file: {e}")
-            return {}
-    return {}
-
-def validate_position_size(size, balance, price, min_size=0.001):
-    """Validate position size before execution"""
-    if size is None or size <= 0:
-        return False, "Position size must be positive"
+    """Load position with enhanced validation and error recovery."""
+    if not os.path.exists(POSITION_FILE):
+        logger.info("No position file found, starting fresh")
+        return {}
     
-    notional_value = size * price
-    if notional_value > balance * 0.95:
-        return False, "Position size too large for available balance"
-    
-    if size < min_size:
-        return False, f"Position size below minimum: {min_size}"
-    
-    return True, "OK"
-
-# ---- Telegram Helper ----
-@rate_limit(min_interval=1.0)
-def send_telegram(msg):
-    """Send Telegram message with error handling and rate limiting"""
-    if not BOT_TOKEN or not CHAT_ID:
-        logger.warning("Telegram credentials not configured")
-        return
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        response = requests.post(
-            url, 
-            data={"chat_id": CHAT_ID, "text": f"🤖 ARS-3 Bot:\n{msg}"}, 
-            timeout=10
-        )
-        if response.status_code != 200:
-            logger.warning(f"Telegram API error: {response.text}")
-    except Exception as e:
-        logger.error(f"Telegram error: {e}")
-
-# ---- Balance Management ----
-def update_balance(pnl=0.0):
-    """Update current balance after trades"""
-    global current_balance
-    current_balance += pnl
-    logger.info(f"Balance updated: {current_balance:.2f} (PnL: {pnl:+.2f})")
-    return current_balance
-
-def get_current_balance():
-    """Get current balance with error handling"""
-    global current_balance
-    if SIMULATION_MODE:
-        return current_balance
-    else:
+        with open(POSITION_FILE, "r") as f:
+            pos = json.load(f)
+        
+        if not pos or not isinstance(pos, dict):
+            logger.info("Empty or invalid position data, starting fresh")
+            return {}
+        
+        # Validate required fields
+        required_fields = ['symbol', 'type', 'size', 'entry_price']
+        missing_fields = [field for field in required_fields if field not in pos or pos[field] is None]
+        
+        if missing_fields:
+            logger.warning(f"Position missing required fields: {missing_fields}, clearing position")
+            return {}
+        
+        # Validate data types
         try:
-            balance_info = broker.get_balance()
-            real_balance = balance_info.get('free', {}).get('USDT', current_balance)
-            current_balance = real_balance
-            return real_balance
-        except Exception as e:
-            logger.error(f"Failed to get real balance: {e}")
-            return current_balance
+            pos['size'] = float(pos['size'])
+            pos['entry_price'] = float(pos['entry_price'])
+            if 'stop_loss' in pos and pos['stop_loss'] is not None:
+                pos['stop_loss'] = float(pos['stop_loss'])
+            if 'tp1' in pos and pos['tp1'] is not None:
+                pos['tp1'] = float(pos['tp1'])
+            if 'tp2' in pos and pos['tp2'] is not None:
+                pos['tp2'] = float(pos['tp2'])
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid position data types: {e}, clearing position")
+            return {}
+        
+        # Convert timestamp back to datetime if present
+        if 'timestamp' in pos and pos['timestamp']:
+            try:
+                pos['timestamp'] = datetime.fromisoformat(pos['timestamp'])
+            except (ValueError, TypeError):
+                pos['timestamp'] = datetime.now()
+        
+        logger.info(f"Position loaded: {pos['type']} {pos['size']:.6f} {pos['symbol']} at {pos['entry_price']:.4f}")
+        return pos
+        
+    except (json.JSONDecodeError, FileNotFoundError) as e:
+        logger.warning(f"Failed to load position file: {e}, starting fresh")
+        return {}
+    except Exception as e:
+        logger.error(f"Unexpected error loading position: {e}")
+        return {}
 
-def check_emergency_stop():
-    """Check for emergency stop conditions"""
-    global current_balance
+def send_telegram(msg, retry_count=3):
+    """Send telegram message with enhanced retry logic and rate limiting."""
+    if not BOT_TOKEN or not CHAT_ID:
+        return False
     
-    # Daily loss check
-    daily_loss_pct = ((current_balance - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100
-    if daily_loss_pct < -MAX_DD_PERCENT:
-        logger.critical(f"Emergency stop triggered: Daily loss {daily_loss_pct:.2f}%")
-        send_telegram(f"🚨 EMERGENCY STOP: Daily loss {daily_loss_pct:.2f}%")
-        return True
+    for attempt in range(retry_count):
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            # Truncate message if too long
+            if len(msg) > 4000:
+                msg = msg[:3900] + "... [truncated]"
+            
+            response = requests.post(
+                url, 
+                data={
+                    "chat_id": CHAT_ID, 
+                    "text": f"🤖 ARS-3 Bot:\n{msg}",
+                    "parse_mode": "Markdown"
+                }, 
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                logger.debug("Telegram message sent successfully")
+                return True
+            else:
+                logger.warning(f"Telegram send failed (attempt {attempt+1}): Status {response.status_code}")
+                
+        except requests.RequestException as e:
+            logger.error(f"Telegram request error (attempt {attempt+1}): {e}")
+        except Exception as e:
+            logger.error(f"Unexpected telegram error (attempt {attempt+1}): {e}")
+        
+        if attempt < retry_count - 1:
+            time.sleep(2 ** attempt)  # Exponential backoff
     
+    logger.error("Failed to send telegram message after all attempts")
     return False
 
-# ---- Main Logic ----
-def update_best_coin():
-    """Update best coin selection with error handling"""
-    global best_coin
-    try:
-        if COINS:
-            new_best_coin = COINS[0]  # Simplified selection
-            if new_best_coin != best_coin:
-                best_coin = new_best_coin
-                broker.symbol = best_coin
-                msg = f"🏆 Switched to trade coin: {best_coin}"
-                logger.info(msg)
-                send_telegram(msg)
-    except Exception as e:
-        logger.error(f"Error updating best coin: {e}")
+def get_current_balance():
+    """Thread-safe balance retrieval with broker fallback."""
+    global current_balance
+    
+    with balance_lock:
+        if SIMULATION_MODE:
+            return current_balance
+        
+        try:
+            if broker is None:
+                logger.warning("Broker not initialized, using cached balance")
+                return current_balance
+            
+            balance_info = broker.get_balance()
+            if balance_info and isinstance(balance_info, dict):
+                if 'free' in balance_info and 'USDT' in balance_info['free']:
+                    new_balance = float(balance_info['free']['USDT'])
+                    if new_balance > 0:  # Sanity check
+                        current_balance = new_balance
+                        logger.debug(f"Balance updated from broker: ${current_balance:.2f}")
+                    else:
+                        logger.warning("Received zero balance from broker, using cached value")
+            else:
+                logger.warning("Invalid balance response from broker")
+            
+            return current_balance
+            
+        except Exception as e:
+            logger.error(f"Failed to get balance from broker: {e}, using cached value")
+            return current_balance
 
-def calculate_pnl(entry_price, exit_price, size, position_type):
-    """Calculate PnL for a trade"""
+def update_balance_and_pnl(pnl=0.0):
+    """Thread-safe balance and P&L tracking with daily reset and limits."""
+    global current_balance, daily_pnl, last_reset_date
+    
+    with balance_lock:
+        current_date = datetime.now().date()
+        
+        # Daily reset logic
+        if current_date != last_reset_date:
+            logger.info(f"Daily reset: Previous day P&L: ${daily_pnl:.2f}")
+            send_telegram(f"📊 *Daily Summary*\nYesterday P&L: ${daily_pnl:.2f}\nStarting fresh day!")
+            daily_pnl = 0.0
+            last_reset_date = current_date
+        
+        # Update balances
+        current_balance += pnl
+        daily_pnl += pnl
+        
+        logger.info(f"Balance updated: P&L ${pnl:.2f}, Daily P&L: ${daily_pnl:.2f}, Total: ${current_balance:.2f}")
+        
+        # Check daily loss limit
+        if daily_pnl <= -MAX_DAILY_LOSS:
+            logger.critical(f"EMERGENCY: Daily loss limit exceeded! Daily P&L: ${daily_pnl:.2f}")
+            send_telegram(f"🚨 *EMERGENCY STOP*\nDaily loss limit exceeded: ${daily_pnl:.2f}\nTrading halted!")
+            
+            try:
+                with open(EMERGENCY_STOP_FILE, 'w') as f:
+                    f.write(f"Daily loss limit exceeded: ${daily_pnl:.2f} at {datetime.now()}")
+                logger.info("Emergency stop file created")
+            except Exception as e:
+                logger.error(f"Failed to create emergency stop file: {e}")
+        
+        # Check maximum drawdown
+        if current_balance < INITIAL_CAPITAL * (1 - MAX_DD_PERCENT / 100):
+            logger.critical(f"EMERGENCY: Maximum drawdown exceeded! Balance: ${current_balance:.2f}")
+            send_telegram(f"🚨 *MAXIMUM DRAWDOWN EXCEEDED*\nCurrent balance: ${current_balance:.2f}\nMax allowed: ${INITIAL_CAPITAL * (1 - MAX_DD_PERCENT / 100):.2f}")
+
+def calculate_pnl(entry_price, exit_price, size, position_type, fee_rate):
+    """Enhanced P&L calculation with validation."""
     try:
-        if position_type == "BUY":
-            return (exit_price - entry_price) * abs(size)
+        # Input validation
+        if any(x is None or not isinstance(x, (int, float)) for x in [entry_price, exit_price, size]):
+            logger.error("Invalid P&L calculation inputs")
+            return 0.0
+        
+        if entry_price <= 0 or exit_price <= 0 or size <= 0 or fee_rate < 0:
+            logger.error("Invalid P&L calculation values")
+            return 0.0
+        
+        # Calculate gross P&L
+        if position_type.upper() == "BUY":
+            gross_pnl = (exit_price - entry_price) * abs(size)
+        elif position_type.upper() == "SELL":
+            gross_pnl = (entry_price - exit_price) * abs(size)
         else:
-            return (entry_price - exit_price) * abs(size)
-    except (TypeError, ValueError) as e:
-        logger.error(f"PnL calculation error: {e}")
+            logger.error(f"Invalid position type: {position_type}")
+            return 0.0
+        
+        # Calculate fees
+        entry_value = entry_price * abs(size)
+        exit_value = exit_price * abs(size)
+        total_fees = (entry_value + exit_value) * fee_rate
+        
+        # Net P&L
+        net_pnl = gross_pnl - total_fees
+        
+        logger.debug(f"P&L calculation: Gross=${gross_pnl:.2f}, Fees=${total_fees:.2f}, Net=${net_pnl:.2f}")
+        return net_pnl
+        
+    except Exception as e:
+        logger.error(f"Error calculating P&L: {e}")
         return 0.0
 
-def validate_ohlcv_data(df):
-    """Validate OHLCV data quality"""
-    if df.empty or len(df) < 50:
-        return False, "Insufficient data length"
-    
-    required_cols = ['open', 'high', 'low', 'close', 'volume']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        return False, f"Missing columns: {missing_cols}"
-    
-    # Check for invalid prices
-    if df['close'].isna().any() or (df['close'] <= 0).any():
-        return False, "Invalid price data detected"
-    
-    # Check data consistency (high >= low, etc.)
-    if (df['high'] < df['low']).any() or (df['high'] < df['close']).any() or (df['low'] > df['close']).any():
-        return False, "Inconsistent OHLCV data"
-    
-    return True, "OK"
+def determine_market_regime(df, cfg):
+    """Enhanced market regime detection with error handling."""
+    try:
+        if df is None or df.empty or len(df) < 20:
+            logger.debug("Insufficient data for regime detection")
+            return "undefined"
+        
+        # Get strategy status for range detection
+        range_status = get_strategy_status(df, cfg)
+        if range_status and range_status.get("suitable_for_strategy", False):
+            logger.debug("Market regime: RANGING detected")
+            return "ranging"
+        
+        # Check trend strength using ADX
+        adx_threshold = TREND_STRATEGY_CONFIG.get("adx_threshold", 25)
+        current_adx = range_status.get("adx", 0) if range_status else 0
+        
+        if current_adx > adx_threshold:
+            logger.debug(f"Market regime: TRENDING detected (ADX: {current_adx:.1f})")
+            return "trending"
+        
+        logger.debug(f"Market regime: UNDEFINED (ADX: {current_adx:.1f})")
+        return "undefined"
+        
+    except Exception as e:
+        logger.error(f"Error determining market regime: {e}")
+        return "undefined"
 
-@rate_limit(min_interval=MIN_API_INTERVAL)
+def check_emergency_conditions():
+    """Check various emergency conditions that should halt trading."""
+    try:
+        # Check emergency stop file
+        if os.path.exists(EMERGENCY_STOP_FILE):
+            return True, "Emergency stop file exists"
+        
+        # Check broker connectivity (if not simulation)
+        if not SIMULATION_MODE and broker:
+            try:
+                test_result = broker.test_connection()
+                if not test_result.get("connected", False):
+                    return True, f"Broker disconnected: {test_result.get('message', 'Unknown error')}"
+            except Exception as e:
+                return True, f"Broker test failed: {e}"
+        
+        # Check balance sanity
+        with balance_lock:
+            if current_balance <= 0:
+                return True, "Balance is zero or negative"
+            
+            if current_balance < INITIAL_CAPITAL * 0.1:  # Less than 10% of initial
+                return True, f"Balance too low: ${current_balance:.2f}"
+        
+        return False, "All checks passed"
+        
+    except Exception as e:
+        logger.error(f"Error checking emergency conditions: {e}")
+        return True, f"Emergency check error: {e}"
+
+# --- CORE TRADING LOGIC ---
 def trading_loop():
-    """Main trading loop with comprehensive error handling"""
-    global equity_log, trades_log, current_balance, position
+    """Enhanced trading loop with comprehensive error handling and safety checks."""
+    global position, best_coin, system_health
+    
+    if shutdown_event.is_set():
+        return
     
     try:
-        # FIXED: Only load position once if empty
-        if not position:
-            position = load_position()
-            if position:
-                logger.info(f"Resumed with active position: {position}")
-                send_telegram(f"Bot restarted. Resumed position: {position.get('symbol', 'Unknown')} ({position.get('type', 'Unknown')})")
-
-        # Emergency stop check
-        if check_emergency_stop():
-            logger.critical("Trading halted due to emergency stop")
+        system_health["last_check"] = datetime.now()
+        system_health["status"] = "running"
+        
+        # Emergency conditions check
+        is_emergency, emergency_reason = check_emergency_conditions()
+        if is_emergency:
+            logger.warning(f"Emergency condition detected: {emergency_reason}")
+            system_health["status"] = f"emergency: {emergency_reason}"
             return
-
+        
         if not best_coin:
-            logger.warning("No best coin selected, skipping cycle")
-            return
-
-        logger.info(f"Running cycle for {best_coin}")
-
-        # 1. Fetch and validate data
-        ohlcv = broker.fetch_ohlcv(limit=200)
-        if not ohlcv:
-            logger.warning("No OHLCV data received, skipping cycle")
-            return
-            
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            logger.warning("No trading symbol selected, selecting first available")
+            best_coin = COINS[0] if COINS else None
+            if not best_coin:
+                logger.error("No trading symbols configured")
+                return
         
-        # FIXED: Validate data quality
-        is_valid, error_msg = validate_ohlcv_data(df)
-        if not is_valid:
-            logger.warning(f"Data validation failed: {error_msg}")
+        if not broker:
+            logger.error("Broker not initialized")
             return
         
-        current_price = df['close'].iloc[-1]
-        current_high = df['high'].iloc[-1]
-        current_low = df['low'].iloc[-1]
-
-        # 2. FIXED: Handle position exits with proper price checking
-        if position:
+        logger.info(f"--- Trading Cycle for {best_coin} ---")
+        
+        # 1. Fetch market data with retry logic
+        max_retries = 3
+        ohlcv_base = None
+        
+        for attempt in range(max_retries):
             try:
-                sl_price = position.get("stop_loss", 0)
-                tp1_price = position.get("tp1", 0)
-                tp2_price = position.get("tp2", 0)
-                is_long = position.get('type') == 'BUY'
-                has_hit_tp1 = position.get("has_hit_tp1", False)
-                entry_price = position.get("entry_price", current_price)
-                
-                # Check stop loss with intrabar prices
-                stop_triggered = False
-                if is_long and current_low <= sl_price:
-                    stop_triggered = True
-                    exit_price = sl_price
-                elif not is_long and current_high >= sl_price:
-                    stop_triggered = True
-                    exit_price = sl_price
-                
-                # Check take profits
-                tp1_triggered = False
-                tp2_triggered = False
-                
-                if not has_hit_tp1:
-                    if is_long and current_high >= tp1_price:
-                        tp1_triggered = True
-                        exit_price = tp1_price
-                    elif not is_long and current_low <= tp1_price:
-                        tp1_triggered = True
-                        exit_price = tp1_price
-                elif has_hit_tp1:
-                    if is_long and current_high >= tp2_price:
-                        tp2_triggered = True
-                        exit_price = tp2_price
-                    elif not is_long and current_low <= tp2_price:
-                        tp2_triggered = True
-                        exit_price = tp2_price
-                
-                # Execute exits
-                if stop_triggered:
-                    close_side = 'sell' if is_long else 'buy'
-                    size = position.get('size', 0)
-                    pnl = calculate_pnl(entry_price, exit_price, size, position['type'])
-                    
-                    msg = f"🛑 STOP LOSS HIT for {position['symbol']} at {exit_price:.4f}"
-                    logger.info(msg)
-                    send_telegram(msg)
-                    
-                    if not SIMULATION_MODE:
-                        order = broker.execute_order(position['symbol'], close_side, abs(size))
-                        if not order:
-                            logger.error("Failed to execute stop loss order")
-                            return
-                    
-                    update_balance(pnl)
-                    trades_log.append({
-                        "timestamp": datetime.now(),
-                        "symbol": position['symbol'],
-                        "type": f"CLOSE_{position['type']}",
-                        "price": exit_price,
-                        "size": size,
-                        "pnl": pnl,
-                        "reason": "Stop Loss"
-                    })
-                    position = {}
-                    save_position({})
-                    
-                elif tp1_triggered:
-                    size = position.get('size', 0)
-                    half_size = size * 0.5
-                    pnl = calculate_pnl(entry_price, exit_price, half_size, position['type'])
-                    
-                    msg = f"🎯 TP1 HIT for {position['symbol']} at {exit_price:.4f} (50% closed)"
-                    logger.info(msg)
-                    send_telegram(msg)
-                    
-                    if not SIMULATION_MODE:
-                        close_side = 'sell' if is_long else 'buy'
-                        order = broker.execute_order(position['symbol'], close_side, abs(half_size))
-                        if not order:
-                            logger.error("Failed to execute TP1 order")
-                            return
-                    
-                    position['size'] = half_size
-                    position['has_hit_tp1'] = True
-                    save_position(position)
-                    
-                    update_balance(pnl)
-                    trades_log.append({
-                        "timestamp": datetime.now(),
-                        "symbol": position['symbol'],
-                        "type": f"TP1_{position['type']}",
-                        "price": exit_price,
-                        "size": half_size,
-                        "pnl": pnl,
-                        "reason": "Take Profit 1"
-                    })
-                    
-                elif tp2_triggered:
-                    remaining_size = position.get('size', 0)
-                    pnl = calculate_pnl(entry_price, exit_price, remaining_size, position['type'])
-                    
-                    msg = f"🎯 TP2 HIT for {position['symbol']} at {exit_price:.4f} (Position closed)"
-                    logger.info(msg)
-                    send_telegram(msg)
-                    
-                    if not SIMULATION_MODE:
-                        close_side = 'sell' if is_long else 'buy'
-                        order = broker.execute_order(position['symbol'], close_side, abs(remaining_size))
-                        if not order:
-                            logger.error("Failed to execute TP2 order")
-                            return
-                    
-                    update_balance(pnl)
-                    trades_log.append({
-                        "timestamp": datetime.now(),
-                        "symbol": position['symbol'],
-                        "type": f"TP2_{position['type']}",
-                        "price": exit_price,
-                        "size": remaining_size,
-                        "pnl": pnl,
-                        "reason": "Take Profit 2"
-                    })
-                    position = {}
-                    save_position({})
-                    
+                ohlcv_base = broker.fetch_ohlcv(limit=200, symbol=best_coin)
+                if ohlcv_base:
+                    break
+                logger.warning(f"Empty data received (attempt {attempt + 1})")
             except Exception as e:
-                logger.error(f"Error processing position exits: {e}")
-
-        # 3. Check for new entry signals
-        if not position:
-            try:
-                balance = get_current_balance()
-                signals = generate_signals(df, cfg=STRATEGY_CONFIG, balance=balance)
+                logger.warning(f"Data fetch attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+        
+        if not ohlcv_base:
+            logger.error("Failed to fetch market data after all retries")
+            return
+        
+        # Prepare DataFrame
+        df_base = pd.DataFrame(ohlcv_base, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df_base["timestamp"] = pd.to_datetime(df_base["timestamp"], unit="ms")
+        
+        if df_base.empty or len(df_base) < 20:
+            logger.warning("Insufficient market data for analysis")
+            return
+        
+        latest_candle = df_base.iloc[-1]
+        current_price = latest_candle['close']
+        current_high = latest_candle['high']
+        current_low = latest_candle['low']
+        
+        logger.debug(f"Current price: {current_price:.4f}, High: {current_high:.4f}, Low: {current_low:.4f}")
+        
+        # 2. Position Exit Logic (HIGHEST PRIORITY)
+        with position_lock:
+            if position:
+                logger.info(f"Checking exit conditions for {position.get('type', 'UNKNOWN')} position")
                 
-                if signals:
-                    signal = signals[0]
+                try:
+                    sl_price = float(position.get("stop_loss", 0))
+                    tp1_price = float(position.get("tp1", 0))
+                    tp2_price = float(position.get("tp2", 0))
+                    is_long = position.get('type', '').upper() == 'BUY'
+                    has_hit_tp1 = position.get("has_hit_tp1", False)
+                    entry_price = float(position.get("entry_price", 0))
+                    current_size = float(position.get("size", 0))
                     
-                    # FIXED: Validate position size
-                    is_valid, error_msg = validate_position_size(
-                        signal.get('size'), balance, current_price
-                    )
-                    if not is_valid:
-                        logger.warning(f"Invalid position size: {error_msg}")
-                        return
-
-                    # Calculate TP2 if missing
-                    tp2 = signal.get('tp2')
-                    if tp2 is None:
-                        if signal['type'] == 'BUY':
-                            tp2 = signal['price'] + (signal['tp1'] - signal['price']) * 2
+                    exit_reason, exit_price, exit_percentage = None, None, 0.0
+                    
+                    # Priority 1: Stop Loss
+                    if sl_price > 0:
+                        if (is_long and current_low <= sl_price) or (not is_long and current_high >= sl_price):
+                            exit_reason, exit_price, exit_percentage = "STOP_LOSS", sl_price, 1.0
+                    
+                    # Priority 2: Take Profit levels
+                    if not exit_reason:
+                        if tp1_price > 0 and not has_hit_tp1:
+                            if (is_long and current_high >= tp1_price) or (not is_long and current_low <= tp1_price):
+                                exit_reason, exit_price, exit_percentage = "TAKE_PROFIT_1", tp1_price, 0.5
+                        elif tp2_price > 0 and has_hit_tp1:
+                            if (is_long and current_high >= tp2_price) or (not is_long and current_low <= tp2_price):
+                                exit_reason, exit_price, exit_percentage = "TAKE_PROFIT_2", tp2_price, 1.0
+                    
+                    # Execute exit if triggered
+                    if exit_reason and exit_price > 0:
+                        exit_size = current_size * exit_percentage
+                        
+                        # Calculate P&L
+                        pnl = calculate_pnl(entry_price, exit_price, exit_size, position['type'], COMMISSION_RATE)
+                        
+                        # Update balance
+                        update_balance_and_pnl(pnl)
+                        
+                        # Execute broker order (if live trading)
+                        if not SIMULATION_MODE and broker and exit_size > 0:
+                            try:
+                                side = 'sell' if is_long else 'buy'
+                                order_result = broker.execute_order(best_coin, side, abs(exit_size))
+                                if not order_result:
+                                    logger.error("Failed to execute exit order in live trading")
+                                else:
+                                    logger.info(f"Live exit order executed: {order_result.get('id', 'N/A')}")
+                            except Exception as e:
+                                logger.error(f"Error executing live exit order: {e}")
+                        
+                        # Update position
+                        if exit_percentage >= 1.0 or exit_reason in ["STOP_LOSS", "TAKE_PROFIT_2"]:
+                            # Full exit
+                            position = {}
+                            save_position({})
                         else:
-                            tp2 = signal['price'] - (signal['price'] - signal['tp1']) * 2
-
-                    msg = (f"🎯 New Signal: {signal['type']} {best_coin}\n"
-                           f"Price: {current_price:.4f}\n"  # FIXED: Use current price
-                           f"Stop: {signal['stop']:.4f}\n"
-                           f"TP1: {signal['tp1']:.4f}\n"
-                           f"TP2: {tp2:.4f}\n"
-                           f"Reason: {signal['reason']}")
-                    logger.info(msg)
-                    send_telegram(msg)
-                    
-                    # Execute trade
-                    side = 'buy' if signal['type'] == 'BUY' else 'sell'
-                    size = signal['size']
-                    actual_price = current_price  # Default execution price
-                    
-                    if not SIMULATION_MODE:
-                        order = broker.execute_order(best_coin, side, size)
-                        if not order:
-                            logger.error("Order execution failed")
-                            return
-                        # FIXED: Use actual execution price if available
-                        actual_price = order.get('price', current_price)
-
-                    # FIXED: Save position with actual execution price
-                    position = {
-                        "symbol": best_coin,
-                        "type": signal['type'],
-                        "size": size,
-                        "entry_price": actual_price,  # Use actual price
-                        "stop_loss": signal['stop'],
-                        "tp1": signal['tp1'],
-                        "tp2": tp2,
-                        "has_hit_tp1": False,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    save_position(position)
-                    
-                    trades_log.append({
-                        "timestamp": datetime.now(),
-                        "symbol": best_coin,
-                        "type": signal['type'],
-                        "price": actual_price,
-                        "size": size,
-                        "reason": signal['reason']
-                    })
-                    
-            except Exception as e:
-                logger.error(f"Error processing entry signals: {e}")
-
-        # 4. Log equity and save data
-        try:
-            current_equity = get_current_balance()
-            equity_log.append({"timestamp": datetime.now(), "equity": current_equity})
-            
-            # Save logs with error handling
-            pd.DataFrame(equity_log).to_csv("equity_live.csv", index=False)
-            if trades_log:
-                pd.DataFrame(trades_log).to_csv("trades_live.csv", index=False)
+                            # Partial exit (TP1)
+                            position['size'] = current_size * (1 - exit_percentage)
+                            position['has_hit_tp1'] = True
+                            save_position(position)
+                        
+                        # Log and notify
+                        msg = f"Position Exit ({exit_reason})\n"
+                        msg += f"Symbol: {best_coin}\n"
+                        msg += f"Exit Price: {exit_price:.4f}\n"
+                        msg += f"Size: {exit_size:.6f}\n"
+                        msg += f"P&L: ${pnl:+.2f}\n"
+                        msg += f"Balance: ${get_current_balance():.2f}"
+                        
+                        logger.info(msg.replace('\n', ', '))
+                        send_telegram(msg)
+                        
+                        # Record trade
+                        trade_record = {
+                            "timestamp": datetime.now(),
+                            "type": exit_reason,
+                            "symbol": best_coin,
+                            "price": exit_price,
+                            "size": exit_size,
+                            "pnl": pnl,
+                            "balance": get_current_balance(),
+                            "reason": f"{exit_reason} triggered"
+                        }
+                        trades_log.append(trade_record)
+                        
+                except Exception as e:
+                    logger.error(f"Error in exit logic: {e}")
+                    continue
+        
+        # 3. New Entry Logic (only if no position)
+        with position_lock:
+            if not position:
+                logger.debug("Checking for new entry signals")
                 
+                try:
+                    # Get HTF data if needed
+                    df_htf = None
+                    if RANGE_STRATEGY_CONFIG.get("use_htf_filter", False):
+                        try:
+                            original_tf = broker.timeframe
+                            broker.timeframe = HTF_TIMEFRAME
+                            ohlcv_htf = broker.fetch_ohlcv(limit=100, symbol=best_coin)
+                            broker.timeframe = original_tf
+                            
+                            if ohlcv_htf:
+                                df_htf = pd.DataFrame(ohlcv_htf, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                                df_htf["timestamp"] = pd.to_datetime(df_htf["timestamp"], unit="ms")
+                        except Exception as e:
+                            logger.warning(f"Failed to get HTF data: {e}")
+                            df_htf = None
+                    
+                    # Determine market regime
+                    balance = get_current_balance()
+                    regime = determine_market_regime(df_base, RANGE_STRATEGY_CONFIG)
+                    
+                    logger.info(f"Market regime: {regime.upper()}")
+                    
+                    # Generate signals based on regime
+                    signals = []
+                    if regime == "ranging":
+                        try:
+                            signals = generate_range_signals(
+                                df_base, 
+                                cfg=RANGE_STRATEGY_CONFIG, 
+                                balance=balance, 
+                                df_htf=df_htf
+                            )
+                        except Exception as e:
+                            logger.error(f"Error generating range signals: {e}")
+                            signals = []
+                    elif regime == "trending":
+                        try:
+                            signals = generate_trend_signals(
+                                df_base, 
+                                cfg=TREND_STRATEGY_CONFIG, 
+                                balance=balance
+                            )
+                        except Exception as e:
+                            logger.error(f"Error generating trend signals: {e}")
+                            signals = []
+                    
+                    # Process valid signals
+                    if signals and len(signals) > 0:
+                        signal = signals[0]  # Take first valid signal
+                        
+                        # Validate signal structure
+                        required_fields = ['type', 'size', 'stop', 'tp1']
+                        if all(field in signal and signal[field] is not None for field in required_fields):
+                            signal_size = float(signal['size'])
+                            
+                            if signal_size > 0:
+                                entry_price = current_price
+                                
+                                # Validate signal makes sense
+                                required_margin = signal_size * entry_price
+                                available_balance = get_current_balance()
+                                
+                                if required_margin <= available_balance * 0.95:  # Don't use more than 95%
+                                    
+                                    # Execute broker order (if live trading)
+                                    order_success = True
+                                    if not SIMULATION_MODE and broker:
+                                        try:
+                                            side = 'buy' if signal['type'].upper() == 'BUY' else 'sell'
+                                            order_result = broker.execute_order(best_coin, side, signal_size)
+                                            if order_result:
+                                                logger.info(f"Live entry order executed: {order_result.get('id', 'N/A')}")
+                                                # Update entry price from actual execution if available
+                                                if 'price' in order_result and order_result['price']:
+                                                    entry_price = float(order_result['price'])
+                                            else:
+                                                logger.error("Failed to execute entry order in live trading")
+                                                order_success = False
+                                        except Exception as e:
+                                            logger.error(f"Error executing live entry order: {e}")
+                                            order_success = False
+                                    
+                                    if order_success:
+                                        # Create position
+                                        position = {
+                                            "symbol": best_coin,
+                                            "type": signal['type'].upper(),
+                                            "size": signal_size,
+                                            "entry_price": entry_price,
+                                            "stop_loss": float(signal['stop']),
+                                            "tp1": float(signal['tp1']),
+                                            "tp2": float(signal.get('tp2', signal['tp1'] * 1.5)),
+                                            "has_hit_tp1": False,
+                                            "timestamp": datetime.now(),
+                                            "strategy": regime
+                                        }
+                                        
+                                        save_position(position)
+                                        
+                                        # Log and notify
+                                        msg = f"NEW POSITION OPENED\n"
+                                        msg += f"Strategy: {regime.upper()}\n"
+                                        msg += f"Signal: {signal['type']} {best_coin}\n"
+                                        msg += f"Entry: {entry_price:.4f}\n"
+                                        msg += f"Size: {signal_size:.6f}\n"
+                                        msg += f"Stop Loss: {signal['stop']:.4f}\n"
+                                        msg += f"TP1: {signal['tp1']:.4f}\n"
+                                        msg += f"TP2: {position['tp2']:.4f}\n"
+                                        msg += f"Reason: {signal.get('reason', 'Signal generated')}"
+                                        
+                                        logger.info(msg.replace('\n', ', '))
+                                        send_telegram(msg)
+                                        
+                                        # Record trade entry
+                                        trade_record = {
+                                            "timestamp": datetime.now(),
+                                            "type": f"ENTRY_{signal['type']}",
+                                            "symbol": best_coin,
+                                            "price": entry_price,
+                                            "size": signal_size,
+                                            "balance": available_balance,
+                                            "strategy": regime,
+                                            "reason": signal.get('reason', 'Signal generated')
+                                        }
+                                        trades_log.append(trade_record)
+                                else:
+                                    logger.warning(f"Insufficient balance for signal: Required ${required_margin:.2f}, Available ${available_balance:.2f}")
+                            else:
+                                logger.warning(f"Invalid signal size: {signal_size}")
+                        else:
+                            missing_fields = [f for f in required_fields if f not in signal or signal[f] is None]
+                            logger.warning(f"Signal missing required fields: {missing_fields}")
+                    else:
+                        logger.debug("No valid entry signals found")
+                        
+                except Exception as e:
+                    logger.error(f"Error in entry logic: {e}")
+        
+        # 4. Record equity and save data
+        try:
+            final_balance = get_current_balance()
+            equity_record = {
+                "timestamp": datetime.now(),
+                "equity": final_balance,
+                "daily_pnl": daily_pnl,
+                "has_position": bool(position)
+            }
+            equity_log.append(equity_record)
+            
+            # Save data to files periodically
+            if len(equity_log) % 10 == 0:  # Every 10 cycles
+                try:
+                    equity_df = pd.DataFrame(list(equity_log))
+                    equity_df.to_csv("equity_live.csv", index=False)
+                    
+                    if trades_log:
+                        trades_df = pd.DataFrame(list(trades_log))
+                        trades_df.to_csv("trades_live.csv", index=False)
+                        
+                    logger.debug("Data files updated")
+                except Exception as e:
+                    logger.error(f"Error saving data files: {e}")
+            
+            system_health["status"] = "healthy"
+            
         except Exception as e:
-            logger.error(f"Error saving logs: {e}")
-
+            logger.error(f"Error recording equity: {e}")
+        
     except Exception as e:
-        error_msg = f"Critical error in trading loop: {e}"
-        logger.error(error_msg, exc_info=True)
-        send_telegram(f"🚨 CRITICAL ERROR\n{error_msg}")
+        logger.error(f"Critical error in trading loop: {e}", exc_info=True)
+        send_telegram(f"CRITICAL ERROR in trading loop: {str(e)[:200]}")
+        system_health["status"] = f"error: {str(e)[:100]}"
 
-# ---- Main Execution ----
-if __name__ == "__main__":
-    logger.info("ARS-3 Bot starting...")
-    send_telegram("Bot is starting up...")
+# --- MONITORING AND HEALTH CHECKS ---
+def system_monitor():
+    """System health monitoring in separate thread."""
+    while not shutdown_event.is_set():
+        try:
+            # Check system health
+            current_time = datetime.now()
+            last_check = system_health.get("last_check", current_time)
+            
+            if (current_time - last_check).total_seconds() > 300:  # 5 minutes
+                logger.warning("Trading loop appears stuck - no activity for 5 minutes")
+                send_telegram("WARNING: Trading loop appears inactive for 5 minutes")
+            
+            # Check file sizes and disk space
+            try:
+                import psutil
+                disk_usage = psutil.disk_usage('.')
+                free_gb = disk_usage.free / (1024**3)
+                if free_gb < 1:
+                    logger.warning(f"Low disk space: {free_gb:.1f}GB free")
+                    send_telegram(f"WARNING: Low disk space - {free_gb:.1f}GB free")
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.debug(f"Disk space check error: {e}")
+            
+            # Memory usage check (basic)
+            try:
+                if len(equity_log) > 5000:
+                    logger.info("Trimming equity log to prevent memory issues")
+                    # Keep only recent 2500 records
+                    while len(equity_log) > 2500:
+                        equity_log.popleft()
+                
+                if len(trades_log) > 2000:
+                    logger.info("Trimming trades log to prevent memory issues")
+                    while len(trades_log) > 1000:
+                        trades_log.popleft()
+            except Exception as e:
+                logger.error(f"Memory management error: {e}")
+            
+            time.sleep(60)  # Check every minute
+            
+        except Exception as e:
+            logger.error(f"System monitor error: {e}")
+            time.sleep(60)
+
+# --- GRACEFUL SHUTDOWN ---
+def graceful_shutdown(signum, frame):
+    """Enhanced graceful shutdown handler."""
+    logger.warning(f"Shutdown signal {signum} received. Initiating graceful shutdown...")
+    send_telegram("SHUTDOWN INITIATED - Bot is shutting down gracefully...")
+    
+    shutdown_event.set()
     
     try:
-        # Initial setup
-        update_best_coin()
-        trading_loop()
-
-        # Schedule jobs
-        schedule.every(1).hours.do(update_best_coin)
-        schedule.every(1).minutes.do(trading_loop)
-
-        logger.info("Bot started successfully. Waiting for scheduled tasks...")
-        
-        while True:
-            try:
-                schedule.run_pending()
-                time.sleep(1)
-            except KeyboardInterrupt:
-                logger.info("Bot stopped by user")
-                save_position(position)
-                break
-            except Exception as e:
-                logger.error(f"Scheduler error: {e}", exc_info=True)
-                send_telegram(f"🔥 SCHEDULER ERROR: {e}")
-                time.sleep(10)
+        with position_lock:
+            if position and not SIMULATION_MODE:
+                force_close = config.get("emergency", {}).get("force_flatten_on_shutdown", True)
+                if force_close and broker:
+                    logger.info("Attempting to close open position due to shutdown...")
+                    try:
+                        side = 'sell' if position['type'].upper() == 'BUY' else 'buy'
+                        size = abs(float(position.get('size', 0)))
+                        
+                        if size > 0:
+                            order_result = broker.execute_order(best_coin, side, size)
+                            if order_result:
+                                logger.info("Position closed successfully on shutdown")
+                                send_telegram("Position closed due to shutdown")
+                            else:
+                                logger.error("Failed to close position on shutdown")
+                                send_telegram("WARNING: Failed to close position on shutdown")
+                    except Exception as e:
+                        logger.error(f"Error closing position on shutdown: {e}")
+                        send_telegram(f"ERROR: Could not close position on shutdown: {e}")
                 
+                # Clear position file
+                position = {}
+                save_position({})
+        
+        # Final data save
+        try:
+            if equity_log:
+                equity_df = pd.DataFrame(list(equity_log))
+                equity_df.to_csv("equity_live_final.csv", index=False)
+            
+            if trades_log:
+                trades_df = pd.DataFrame(list(trades_log))
+                trades_df.to_csv("trades_live_final.csv", index=False)
+                
+            logger.info("Final data backup completed")
+        except Exception as e:
+            logger.error(f"Error in final data save: {e}")
+        
+        # Cleanup broker
+        if broker:
+            try:
+                broker.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up broker: {e}")
+        
+        logger.info("Graceful shutdown completed")
+        send_telegram("Shutdown completed successfully")
+        
     except Exception as e:
-        logger.critical(f"Bot startup failed: {e}", exc_info=True)
-        send_telegram(f"💥 BOT STARTUP FAILED: {e}")
+        logger.error(f"Error during shutdown: {e}")
+        send_telegram(f"ERROR during shutdown: {e}")
+    
+    sys.exit(0)
+
+# --- MAIN EXECUTION ---
+if __name__ == "__main__":
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    
+    logger.info("=" * 60)
+    logger.info("ARS-3 ENHANCED MULTI-STRATEGY TRADING BOT")
+    logger.info("=" * 60)
+    
+    try:
+        # Send startup notification
+        mode = "SIMULATION" if SIMULATION_MODE else "LIVE TRADING"
+        send_telegram(f"BOT STARTING UP\nMode: {mode}\nInitial Balance: ${INITIAL_CAPITAL:,.2f}")
+        
+        # Initialize broker
+        if not init_broker():
+            logger.critical("Failed to initialize broker, exiting")
+            exit(1)
+        
+        # Load existing position
+        position = load_position()
+        if position:
+            logger.info(f"Resumed existing position: {position['type']} {position['size']:.6f} {position['symbol']}")
+            send_telegram(f"Resumed position: {position['type']} {position['size']:.6f} {position['symbol']}")
+        
+        # Set current balance
+        current_balance = get_current_balance()
+        logger.info(f"Initial balance: ${current_balance:,.2f}")
+        
+        # Select trading symbol
+        best_coin = COINS[0] if COINS else None
+        if not best_coin:
+            logger.critical("No trading symbols configured")
+            exit(1)
+        
+        broker.symbol = best_coin
+        logger.info(f"Selected trading symbol: {best_coin}")
+        
+        # Start system monitor
+        monitor_thread = threading.Thread(target=system_monitor, daemon=True)
+        monitor_thread.start()
+        logger.info("System monitor started")
+        
+        # Run initial cycle
+        logger.info("Running initial trading cycle...")
+        trading_loop()
+        
+        # Schedule regular trading cycles
+        schedule.every(1).minutes.do(trading_loop)
+        logger.info("Trading scheduler initialized")
+        
+        send_telegram(f"BOT FULLY OPERATIONAL\nSymbol: {best_coin}\nMode: {mode}")
+        logger.info("=" * 60)
+        logger.info("ARS-3 BOT FULLY OPERATIONAL")
+        logger.info("Press Ctrl+C to shutdown gracefully")
+        logger.info("=" * 60)
+        
+        # Main execution loop
+        while not shutdown_event.is_set():
+            schedule.run_pending()
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+        graceful_shutdown(signal.SIGINT, None)
+    except Exception as e:
+        logger.critical(f"Fatal error in main execution: {e}", exc_info=True)
+        send_telegram(f"FATAL ERROR: {e}")
+        sys.exit(1)

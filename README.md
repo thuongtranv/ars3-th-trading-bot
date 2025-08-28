@@ -45,8 +45,8 @@ Clone the repository (or download files) and navigate to the project directory.
 
 Install required libraries:
 ```
-pip install ccxt pandas numpy matplotlib pyyaml python-dotenv streamlit schedule requests
-pip install plotly
+pip install ccxt pandas numpy matplotlib pyyaml python-dotenv streamlit schedule requests plotly psutil
+pip install -r requirements.txt
 ```
 - **ccxt**: For exchange integration.
 - **pandas/numpy/matplotlib**: Data handling and charting.
@@ -123,7 +123,7 @@ No additional installs needed beyond this—CCXT handles exchange APIs.
     df, trades = backtest(df, config, initial_balance=10000)
     ```
   **Chạy backtest** với broker data
-    python ars3_backtest.py
+    python ars3_backtest.py --data-source broker --symbol BTC/USDT --timeframe 1h --strategy range
 - **Testnet**: Set `testnet: True` for live-like testing on Binance testnet (fake funds).
 
 ### 6. Monitoring & Logs

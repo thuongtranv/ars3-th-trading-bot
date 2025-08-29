@@ -1,4 +1,4 @@
-# ARS-3 Trading Bot Configuration (Enhanced Version)
+# ARS-3 Trading Bot Configuration (Enhanced Version with Regime Detection)
 # Main bot settings
 coins: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "ADA/USDT"]
 timeframe: "1h"
@@ -84,12 +84,50 @@ trend_strategy:
   use_trailing_stop: true    # Enable trailing stop
   trail_distance_atr: 2.0    # Trail at 2x ATR distance
 
-# Market regime detection
+# Market Regime Detection (Professional Grade)
 regime_detection:
-  volatility_window: 20      # Bars to calculate volatility
-  trend_strength_window: 50  # Bars to measure trend strength
-  regime_switch_threshold: 0.3 # Threshold for regime change
-  min_bars_same_regime: 5    # Min bars before switching strategies
+  # Minimum data requirements
+  min_data_points: 200       # Minimum bars required for analysis
+  
+  # Indicator periods
+  adx_period: 14            # ADX period for trend strength
+  atr_period: 14            # ATR period for volatility
+  slope_ema_period: 200     # Long EMA for slope calculation
+  slope_period: 50          # Lookback period for slope
+  bb_period: 20             # Bollinger Band period
+  vol_period: 50            # Volume analysis period
+  
+  # Thresholds for component scoring (0-1 scale)
+  adx_low: 18               # ADX below this = ranging
+  adx_high: 25              # ADX above this = trending
+  natr_low: 0.003           # nATR below this = low volatility (0.3%)
+  natr_high: 0.006          # nATR above this = high volatility (0.6%)
+  slope_abs_low: 0.00005    # Absolute slope below this = sideways
+  slope_abs_high: 0.00015   # Absolute slope above this = strong trend
+  
+  # Regime decision thresholds (with hysteresis to prevent flip-flopping)
+  trend_on: 0.60            # Trend score threshold to ENTER trending mode
+  trend_off: 0.45           # Trend score threshold to EXIT trending mode
+  range_on: 0.60            # Range score threshold to ENTER ranging mode
+  range_off: 0.45           # Range score threshold to EXIT ranging mode
+  
+  # Compression detection (low volatility + tight price action)
+  bb_width_low: 0.015       # BB width below 1.5% indicates compression
+  
+  # Stability controls
+  cooldown_bars: 3          # Wait N bars before allowing regime change
+  
+  # Score weights (must sum to 1.0 for each regime)
+  trend_weights:
+    adx: 0.5                # ADX strength weight
+    natr: 0.2               # Volatility weight  
+    slope: 0.2              # Directional slope weight
+    volume: 0.1             # Volume confirmation weight
+    
+  range_weights:
+    adx: 0.5                # Low ADX weight (inverted)
+    natr: 0.3               # Low volatility weight (inverted)
+    slope: 0.2              # Flat slope weight (inverted)
 
 # Notification settings
 notifications:
@@ -97,6 +135,7 @@ notifications:
     enabled: true
     send_entries: true
     send_exits: true
+    send_regime_changes: true    # NEW: Alert on regime changes
     send_daily_summary: true
     send_errors: true
   
@@ -113,6 +152,7 @@ logging:
   keep_log_files: 10         # Keep last 10 log files
   log_trades: true
   log_signals: true
+  log_regime_changes: true   # NEW: Log regime transitions
   log_errors: true
 
 # Data management
@@ -132,6 +172,7 @@ performance:
   max_drawdown_alert: 10          # Alert if drawdown > 10%
   consecutive_losses_alert: 5      # Alert after 5 consecutive losses
   low_balance_alert_pct: 20       # Alert if balance drops 20% from peak
+  regime_instability_alert: 10    # Alert if regime changes > N times per day
 
 # Connection and reliability
 connection:
@@ -147,6 +188,7 @@ backtest:
   slippage_pct: 0.01            # 1% average slippage
   realistic_execution: true      # Use realistic fill prices
   position_timeout_bars: 200     # Force close after 200 bars
+  include_regime_analysis: true  # NEW: Include regime stats in backtest
   
   # Monte Carlo settings
   monte_carlo_runs: 1000         # Number of MC simulations
@@ -160,6 +202,7 @@ emergency:
   circuit_breaker_loss_pct: 0.1          # Stop trading at 10% loss
   force_flatten_on_shutdown: true        # Close all positions on shutdown
   emergency_contact_telegram: true       # Send emergency notifications
+  max_regime_changes_per_day: 15         # Emergency stop if too many regime changes
 
 # Advanced features
 advanced:
@@ -167,6 +210,7 @@ advanced:
   correlation_filter: true               # Avoid correlated positions
   market_session_filter: false           # Trade only during market hours
   news_sentiment_filter: false           # Filter trades based on news (requires API)
+  regime_based_position_sizing: true     # NEW: Adjust size based on regime confidence
   
   # Machine learning (future expansion)
   ml_enhanced_signals: false             # Use ML for signal enhancement

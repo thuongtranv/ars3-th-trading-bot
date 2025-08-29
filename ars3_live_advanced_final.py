@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from ars3_broker_ccxt import Broker
 from ars3_strategy_rs75 import generate_signals as generate_range_signals, get_strategy_status
 from ars3_strategy_trend import generate_signals as generate_trend_signals
+from ars3_strategy_utils import MarketRegimeDetector, calculate_regime_indicators
 
 # --- SETUP LOGGING ---
 logging.basicConfig(
@@ -51,6 +52,7 @@ try:
     # Strategy configs
     RANGE_STRATEGY_CONFIG = config.get("rs75_strategy", {})
     TREND_STRATEGY_CONFIG = config.get("trend_strategy", {})
+    REGIME_DETECTION_CONFIG = config.get("regime_detection", {})
     
     logger.info(f"Configuration loaded: {len(COINS)} symbols, Initial capital: ${INITIAL_CAPITAL:,.2f}")
     
@@ -69,6 +71,9 @@ daily_pnl = 0.0
 last_reset_date = datetime.now().date()
 shutdown_event = threading.Event()
 system_health = {"status": "initializing", "last_check": datetime.now()}
+
+# Initialize Market Regime Detector
+regime_detector = MarketRegimeDetector(REGIME_DETECTION_CONFIG)
 
 # Data storage with thread-safe collections
 equity_log = deque(maxlen=config.get("data_management", {}).get("max_equity_records", 10000))
@@ -323,29 +328,32 @@ def calculate_pnl(entry_price, exit_price, size, position_type, fee_rate):
         logger.error(f"Error calculating P&L: {e}")
         return 0.0
 
-def determine_market_regime(df, cfg):
-    """Enhanced market regime detection with error handling."""
+def determine_market_regime(df):
+    """Enhanced market regime detection using professional detector."""
     try:
-        if df is None or df.empty or len(df) < 20:
+        if df is None or df.empty or len(df) < REGIME_DETECTION_CONFIG.get("min_data_points", 200):
             logger.debug("Insufficient data for regime detection")
             return "undefined"
         
-        # Get strategy status for range detection
-        range_status = get_strategy_status(df, cfg)
-        if range_status and range_status.get("suitable_for_strategy", False):
-            logger.debug("Market regime: RANGING detected")
-            return "ranging"
+        # Calculate regime indicators
+        indicators = calculate_regime_indicators(df, REGIME_DETECTION_CONFIG)
         
-        # Check trend strength using ADX
-        adx_threshold = TREND_STRATEGY_CONFIG.get("adx_threshold", 25)
-        current_adx = range_status.get("adx", 0) if range_status else 0
+        if indicators is None:
+            logger.debug("Failed to calculate regime indicators")
+            return "undefined"
         
-        if current_adx > adx_threshold:
-            logger.debug(f"Market regime: TRENDING detected (ADX: {current_adx:.1f})")
-            return "trending"
+        # Determine regime using professional detector
+        regime = regime_detector.determine(indicators)
         
-        logger.debug(f"Market regime: UNDEFINED (ADX: {current_adx:.1f})")
-        return "undefined"
+        # Log regime information with scores
+        scores = regime_detector.last_scores
+        logger.info(f"Market Regime: {regime.upper()}")
+        logger.debug(f"Regime scores: Trend={scores.get('trend_score', 0):.3f}, "
+                    f"Range={scores.get('range_score', 0):.3f}, "
+                    f"ADX={scores.get('adx', 0):.1f}, "
+                    f"nATR={scores.get('natr', 0):.4f}")
+        
+        return regime
         
     except Exception as e:
         logger.error(f"Error determining market regime: {e}")
@@ -383,7 +391,7 @@ def check_emergency_conditions():
 
 # --- CORE TRADING LOGIC ---
 def trading_loop():
-    """Enhanced trading loop with comprehensive error handling and safety checks."""
+    """Enhanced trading loop with professional regime detection."""
     global position, best_coin, system_health
     
     if shutdown_event.is_set():
@@ -419,7 +427,7 @@ def trading_loop():
         
         for attempt in range(max_retries):
             try:
-                ohlcv_base = broker.fetch_ohlcv(limit=200, symbol=best_coin)
+                ohlcv_base = broker.fetch_ohlcv(limit=300, symbol=best_coin)  # Increased for regime detection
                 if ohlcv_base:
                     break
                 logger.warning(f"Empty data received (attempt {attempt + 1})")
@@ -436,7 +444,7 @@ def trading_loop():
         df_base = pd.DataFrame(ohlcv_base, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df_base["timestamp"] = pd.to_datetime(df_base["timestamp"], unit="ms")
         
-        if df_base.empty or len(df_base) < 20:
+        if df_base.empty or len(df_base) < 50:
             logger.warning("Insufficient market data for analysis")
             return
         
@@ -536,7 +544,6 @@ def trading_loop():
                         
                 except Exception as e:
                     logger.error(f"Error in exit logic: {e}")
-                    continue
         
         # 3. New Entry Logic (only if no position)
         with position_lock:
@@ -560,9 +567,9 @@ def trading_loop():
                             logger.warning(f"Failed to get HTF data: {e}")
                             df_htf = None
                     
-                    # Determine market regime
+                    # Determine market regime using professional detector
                     balance = get_current_balance()
-                    regime = determine_market_regime(df_base, RANGE_STRATEGY_CONFIG)
+                    regime = determine_market_regime(df_base)
                     
                     logger.info(f"Market regime: {regime.upper()}")
                     
@@ -589,6 +596,12 @@ def trading_loop():
                         except Exception as e:
                             logger.error(f"Error generating trend signals: {e}")
                             signals = []
+                    elif regime == "compression":
+                        logger.info("Market in compression - waiting for breakout")
+                        signals = []
+                    else:
+                        logger.debug(f"Undefined regime - no signals generated")
+                        signals = []
                     
                     # Process valid signals
                     if signals and len(signals) > 0:
@@ -638,7 +651,8 @@ def trading_loop():
                                             "tp2": float(signal.get('tp2', signal['tp1'] * 1.5)),
                                             "has_hit_tp1": False,
                                             "timestamp": datetime.now(),
-                                            "strategy": regime
+                                            "strategy": regime,
+                                            "regime_scores": regime_detector.last_scores.copy()
                                         }
                                         
                                         save_position(position)
@@ -652,6 +666,10 @@ def trading_loop():
                                         msg += f"Stop Loss: {signal['stop']:.4f}\n"
                                         msg += f"TP1: {signal['tp1']:.4f}\n"
                                         msg += f"TP2: {position['tp2']:.4f}\n"
+                                        
+                                        # Add regime info
+                                        scores = regime_detector.last_scores
+                                        msg += f"Regime Scores: T={scores.get('trend_score', 0):.2f}, R={scores.get('range_score', 0):.2f}\n"
                                         msg += f"Reason: {signal.get('reason', 'Signal generated')}"
                                         
                                         logger.info(msg.replace('\n', ', '))
@@ -666,6 +684,7 @@ def trading_loop():
                                             "size": signal_size,
                                             "balance": available_balance,
                                             "strategy": regime,
+                                            "regime_scores": scores,
                                             "reason": signal.get('reason', 'Signal generated')
                                         }
                                         trades_log.append(trade_record)
@@ -689,7 +708,8 @@ def trading_loop():
                 "timestamp": datetime.now(),
                 "equity": final_balance,
                 "daily_pnl": daily_pnl,
-                "has_position": bool(position)
+                "has_position": bool(position),
+                "regime": regime_detector.current_regime if 'regime_detector' in globals() else 'undefined'
             }
             equity_log.append(equity_record)
             
@@ -835,13 +855,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
     
     logger.info("=" * 60)
-    logger.info("ARS-3 ENHANCED MULTI-STRATEGY TRADING BOT")
+    logger.info("ARS-3 ENHANCED MULTI-STRATEGY TRADING BOT v2.0")
     logger.info("=" * 60)
     
     try:
         # Send startup notification
         mode = "SIMULATION" if SIMULATION_MODE else "LIVE TRADING"
-        send_telegram(f"BOT STARTING UP\nMode: {mode}\nInitial Balance: ${INITIAL_CAPITAL:,.2f}")
+        send_telegram(f"BOT STARTING UP\nMode: {mode}\nInitial Balance: ${INITIAL_CAPITAL:,.2f}\nRegime Detection: ENABLED")
         
         # Initialize broker
         if not init_broker():
@@ -867,6 +887,9 @@ if __name__ == "__main__":
         broker.symbol = best_coin
         logger.info(f"Selected trading symbol: {best_coin}")
         
+        # Initialize regime detector status
+        logger.info(f"Regime detector initialized with config: {REGIME_DETECTION_CONFIG}")
+        
         # Start system monitor
         monitor_thread = threading.Thread(target=system_monitor, daemon=True)
         monitor_thread.start()
@@ -880,9 +903,9 @@ if __name__ == "__main__":
         schedule.every(1).minutes.do(trading_loop)
         logger.info("Trading scheduler initialized")
         
-        send_telegram(f"BOT FULLY OPERATIONAL\nSymbol: {best_coin}\nMode: {mode}")
+        send_telegram(f"BOT FULLY OPERATIONAL\nSymbol: {best_coin}\nMode: {mode}\nRegime Detection: Active")
         logger.info("=" * 60)
-        logger.info("ARS-3 BOT FULLY OPERATIONAL")
+        logger.info("ARS-3 BOT FULLY OPERATIONAL WITH REGIME DETECTION")
         logger.info("Press Ctrl+C to shutdown gracefully")
         logger.info("=" * 60)
         

@@ -1,6 +1,6 @@
 """
-ars3_backtest.py (v3.0 - COMPLETELY REWRITTEN)
-Professional-grade backtest engine with proper intrabar execution, 
+ars3_backtest.py (v4.0 - Enhanced with Regime Detection)
+Professional-grade backtest engine with regime-aware strategy selection,
 realistic slippage, commission handling, and comprehensive analytics.
 """
 
@@ -19,6 +19,7 @@ import os
 try:
     from ars3_strategy_rs75 import generate_signals as generate_range_signals
     from ars3_strategy_trend import generate_signals as generate_trend_signals
+    from ars3_strategy_utils import MarketRegimeDetector, calculate_regime_indicators
     from ars3_broker_ccxt import Broker
 except ImportError as e:
     logging.error(f"Failed to import required modules: {e}")
@@ -39,11 +40,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class BacktestEngine:
-    """Professional backtesting engine with realistic execution simulation."""
+    """Professional backtesting engine with regime-aware strategy selection."""
     
     def __init__(self, config: Dict, initial_balance: float = 10000.0):
         self.config = config
         self.initial_balance = initial_balance
+        
+        # Initialize regime detector
+        regime_config = config.get('regime_detection', {})
+        self.regime_detector = MarketRegimeDetector(regime_config)
         
         # Backtest state
         self.reset()
@@ -53,8 +58,9 @@ class BacktestEngine:
         self.slippage_pct = config.get('backtest', {}).get('slippage_pct', 0.01)
         self.realistic_execution = config.get('backtest', {}).get('realistic_execution', True)
         self.position_timeout_bars = config.get('backtest', {}).get('position_timeout_bars', 200)
+        self.include_regime_analysis = config.get('backtest', {}).get('include_regime_analysis', True)
         
-        logger.info(f"Backtest engine initialized - Balance: ${initial_balance:,.2f}, Commission: {self.commission_rate*100:.4f}%, Slippage: {self.slippage_pct*100:.2f}%")
+        logger.info(f"Backtest engine initialized - Balance: ${initial_balance:,.2f}, Commission: {self.commission_rate*100:.4f}%, Regime Detection: {'ON' if self.include_regime_analysis else 'OFF'}")
     
     def reset(self):
         """Reset backtest state for new run."""
@@ -67,6 +73,13 @@ class BacktestEngine:
         self.trade_count = 0
         self.peak_balance = self.initial_balance
         self.max_drawdown = 0.0
+        
+        # Regime tracking
+        self.regime_history = []
+        self.regime_stats = {}
+        if hasattr(self, 'regime_detector'):
+            self.regime_detector.current_regime = "undefined"
+            self.regime_detector.cooldown_counter = 0
         
         logger.debug("Backtest state reset")
     
@@ -125,7 +138,50 @@ class BacktestEngine:
             logger.error(f"Error calculating position size: {e}")
             return 0.0
     
-    def open_position(self, signal: Dict, bar_data: Dict, bar_index: int) -> bool:
+    def determine_strategy(self, df: pd.DataFrame, bar_index: int) -> Tuple[str, str]:
+        """Determine which strategy to use based on market regime."""
+        try:
+            if not self.include_regime_analysis:
+                return "range", "Default range strategy"
+            
+            # Need sufficient data for regime detection
+            min_data = self.config.get('regime_detection', {}).get('min_data_points', 200)
+            if len(df) < min_data:
+                return "range", "Insufficient data for regime detection"
+            
+            # Calculate regime indicators
+            indicators = calculate_regime_indicators(df, self.config.get('regime_detection', {}))
+            
+            if indicators is None:
+                return "range", "Failed to calculate regime indicators"
+            
+            # Determine regime
+            regime = self.regime_detector.determine(indicators)
+            
+            # Record regime history
+            regime_record = {
+                'bar_index': bar_index,
+                'regime': regime,
+                'scores': self.regime_detector.last_scores.copy(),
+                'indicators': indicators.copy()
+            }
+            self.regime_history.append(regime_record)
+            
+            # Map regime to strategy
+            if regime == "trending":
+                return "trend", f"Trending regime detected (score: {self.regime_detector.last_scores.get('trend_score', 0):.3f})"
+            elif regime == "ranging":
+                return "range", f"Ranging regime detected (score: {self.regime_detector.last_scores.get('range_score', 0):.3f})"
+            elif regime == "compression":
+                return "none", "Compression regime - no trading"
+            else:
+                return "range", "Undefined regime - default to range"
+                
+        except Exception as e:
+            logger.error(f"Error determining strategy: {e}")
+            return "range", f"Error in regime detection: {str(e)}"
+    
+    def open_position(self, signal: Dict, bar_data: Dict, bar_index: int, strategy_used: str, strategy_reason: str) -> bool:
         """Open a new position with realistic execution."""
         try:
             if self.current_position is not None:
@@ -153,7 +209,7 @@ class BacktestEngine:
             
             # Create position
             self.current_position = {
-                'symbol': signal.get('symbol', 'UNKNOWN'),
+                'symbol': signal.get('symbol', 'BACKTEST'),
                 'type': signal['type'],
                 'size': position_size,
                 'entry_price': execution_price,
@@ -164,7 +220,10 @@ class BacktestEngine:
                 'tp2': signal.get('tp2', execution_price * (1.05 if signal['type'] == 'BUY' else 0.95)),
                 'has_hit_tp1': False,
                 'commission_paid': commission,
-                'unrealized_pnl': 0.0
+                'unrealized_pnl': 0.0,
+                'strategy_used': strategy_used,
+                'strategy_reason': strategy_reason,
+                'regime': self.regime_detector.current_regime if self.include_regime_analysis else 'unknown'
             }
             
             # Deduct balance
@@ -181,13 +240,15 @@ class BacktestEngine:
                 'size': position_size,
                 'commission': commission,
                 'balance_after': self.balance,
+                'strategy': strategy_used,
+                'regime': self.current_position['regime'],
                 'reason': signal.get('reason', 'Signal generated')
             }
             
             self.trades.append(trade_record)
             self.trade_count += 1
             
-            logger.info(f"Position opened: {signal['type']} {position_size:.6f} at {execution_price:.4f}")
+            logger.info(f"Position opened: {signal['type']} {position_size:.6f} at {execution_price:.4f} ({strategy_used} strategy)")
             return True
             
         except Exception as e:
@@ -250,6 +311,8 @@ class BacktestEngine:
                 'net_pnl': net_pnl,
                 'balance_after': self.balance,
                 'bars_held': bar_index - position['entry_bar'],
+                'strategy': position.get('strategy_used', 'unknown'),
+                'regime': position.get('regime', 'unknown'),
                 'reason': f"{exit_type} triggered"
             }
             
@@ -320,10 +383,10 @@ class BacktestEngine:
         
         return exits
     
-    def run_backtest(self, df: pd.DataFrame, strategy_type: str = 'range') -> Dict:
-        """Run the complete backtest."""
+    def run_backtest(self, df: pd.DataFrame, strategy_type: str = 'auto') -> Dict:
+        """Run the complete backtest with regime-aware strategy selection."""
         try:
-            logger.info(f"Starting backtest with {len(df)} bars using {strategy_type} strategy")
+            logger.info(f"Starting backtest with {len(df)} bars using {'regime-aware' if strategy_type == 'auto' else strategy_type} strategy")
             self.reset()
             
             # Validate data
@@ -332,6 +395,9 @@ class BacktestEngine:
             
             # Prepare data
             df = df.copy().reset_index(drop=True)
+            
+            # Strategy usage tracking
+            strategy_usage = {'range': 0, 'trend': 0, 'none': 0}
             
             for i in range(len(df)):
                 bar_data = {
@@ -356,27 +422,36 @@ class BacktestEngine:
                     window = df.iloc[:i+1].copy()
                     
                     try:
-                        # Generate signals based on strategy type
-                        if strategy_type == 'range':
+                        # Determine strategy based on regime (if auto mode)
+                        if strategy_type == 'auto':
+                            selected_strategy, strategy_reason = self.determine_strategy(window, i)
+                        else:
+                            selected_strategy = strategy_type
+                            strategy_reason = f"Fixed {strategy_type} strategy"
+                        
+                        strategy_usage[selected_strategy] = strategy_usage.get(selected_strategy, 0) + 1
+                        
+                        # Generate signals based on selected strategy
+                        signals = []
+                        if selected_strategy == 'range':
                             signals = generate_range_signals(
                                 window, 
                                 self.config.get('rs75_strategy', {}), 
                                 balance=self.balance
                             )
-                        elif strategy_type == 'trend':
+                        elif selected_strategy == 'trend':
                             signals = generate_trend_signals(
                                 window, 
                                 self.config.get('trend_strategy', {}), 
                                 balance=self.balance
                             )
-                        else:
-                            signals = []
+                        # 'none' strategy generates no signals
                         
                         # Process first valid signal
                         if signals:
                             signal = signals[0]
                             signal['symbol'] = 'BACKTEST'  # Add symbol for tracking
-                            self.open_position(signal, bar_data, i)
+                            self.open_position(signal, bar_data, i, selected_strategy, strategy_reason)
                             
                     except Exception as e:
                         logger.debug(f"Signal generation error at bar {i}: {e}")
@@ -387,7 +462,8 @@ class BacktestEngine:
                     'timestamp': bar_data['timestamp'],
                     'bar_index': i,
                     'equity': self.balance,
-                    'has_position': self.current_position is not None
+                    'has_position': self.current_position is not None,
+                    'regime': self.regime_detector.current_regime if self.include_regime_analysis else 'unknown'
                 })
             
             # Force close any remaining position
@@ -404,6 +480,11 @@ class BacktestEngine:
             # Calculate final metrics
             results = self.calculate_metrics()
             
+            # Add regime and strategy analysis
+            if self.include_regime_analysis:
+                results['regime_analysis'] = self.analyze_regime_performance()
+                results['strategy_usage'] = strategy_usage
+            
             logger.info(f"Backtest completed: Final balance ${self.balance:.2f}, Total return {results.get('total_return_pct', 0):.2f}%")
             
             return results
@@ -411,6 +492,64 @@ class BacktestEngine:
         except Exception as e:
             logger.error(f"Backtest execution failed: {e}")
             raise
+    
+    def analyze_regime_performance(self) -> Dict:
+        """Analyze performance by market regime."""
+        try:
+            if not self.regime_history:
+                return {}
+            
+            # Group trades by regime
+            regime_trades = {}
+            for trade in self.trades:
+                if 'net_pnl' in trade:  # Only exit trades
+                    regime = trade.get('regime', 'unknown')
+                    if regime not in regime_trades:
+                        regime_trades[regime] = []
+                    regime_trades[regime].append(trade)
+            
+            # Calculate stats per regime
+            regime_stats = {}
+            for regime, trades in regime_trades.items():
+                if not trades:
+                    continue
+                
+                pnls = [t['net_pnl'] for t in trades]
+                winning_trades = [p for p in pnls if p > 0]
+                losing_trades = [p for p in pnls if p < 0]
+                
+                regime_stats[regime] = {
+                    'total_trades': len(trades),
+                    'winning_trades': len(winning_trades),
+                    'losing_trades': len(losing_trades),
+                    'win_rate_pct': (len(winning_trades) / len(trades) * 100) if trades else 0,
+                    'total_pnl': sum(pnls),
+                    'avg_pnl': np.mean(pnls),
+                    'avg_win': np.mean(winning_trades) if winning_trades else 0,
+                    'avg_loss': np.mean(losing_trades) if losing_trades else 0,
+                    'best_trade': max(pnls) if pnls else 0,
+                    'worst_trade': min(pnls) if pnls else 0
+                }
+            
+            # Regime distribution
+            regime_counts = {}
+            for record in self.regime_history:
+                regime = record['regime']
+                regime_counts[regime] = regime_counts.get(regime, 0) + 1
+            
+            total_bars = len(self.regime_history)
+            regime_distribution = {regime: count/total_bars*100 for regime, count in regime_counts.items()}
+            
+            return {
+                'regime_trades': regime_stats,
+                'regime_distribution': regime_distribution,
+                'regime_changes': len(set(r['regime'] for r in self.regime_history)),
+                'total_regime_bars': total_bars
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing regime performance: {e}")
+            return {}
     
     def validate_data(self, df: pd.DataFrame) -> bool:
         """Validate OHLCV data quality."""
@@ -612,8 +751,236 @@ def load_data_from_csv(file_path: str) -> Optional[pd.DataFrame]:
         logger.error(f"Error loading data from CSV: {e}")
         return None
 
+def create_regime_analysis_chart(engine: BacktestEngine, save_path: str = "regime_analysis.png") -> None:
+    """Create regime analysis visualization."""
+    try:
+        if not engine.include_regime_analysis or not engine.regime_history:
+            logger.info("No regime data available for visualization")
+            return
+        
+        fig, axes = plt.subplots(3, 1, figsize=(15, 12))
+        
+        # Regime timeline
+        regime_df = pd.DataFrame(engine.regime_history)
+        
+        # Map regimes to colors
+        regime_colors = {'trending': 'green', 'ranging': 'blue', 'compression': 'orange', 'undefined': 'gray'}
+        
+        for regime in regime_df['regime'].unique():
+            regime_data = regime_df[regime_df['regime'] == regime]
+            axes[0].scatter(regime_data['bar_index'], [regime]*len(regime_data), 
+                           color=regime_colors.get(regime, 'black'), label=regime, alpha=0.7)
+        
+        axes[0].set_title('Market Regime Timeline')
+        axes[0].set_ylabel('Regime')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        
+        # Regime scores over time
+        if 'scores' in regime_df.columns and regime_df['scores'].iloc[0]:
+            trend_scores = [s.get('trend_score', 0) for s in regime_df['scores']]
+            range_scores = [s.get('range_score', 0) for s in regime_df['scores']]
+            
+            axes[1].plot(regime_df['bar_index'], trend_scores, label='Trend Score', color='green')
+            axes[1].plot(regime_df['bar_index'], range_scores, label='Range Score', color='blue')
+            axes[1].axhline(y=0.6, color='red', linestyle='--', alpha=0.7, label='Threshold')
+            axes[1].set_title('Regime Scores Over Time')
+            axes[1].set_ylabel('Score')
+            axes[1].legend()
+            axes[1].grid(True, alpha=0.3)
+        
+        # Regime distribution pie chart
+        regime_counts = regime_df['regime'].value_counts()
+        axes[2].pie(regime_counts.values, labels=regime_counts.index, autopct='%1.1f%%', 
+                    colors=[regime_colors.get(r, 'gray') for r in regime_counts.index])
+        axes[2].set_title('Market Regime Distribution')
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Regime analysis chart saved to {save_path}")
+        
+    except Exception as e:
+        logger.error(f"Error creating regime analysis chart: {e}")
+
+def run_comprehensive_backtest(
+    data_source: str = "broker",
+    config_path: str = "ars3_config.yaml",
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    initial_balance: float = 10000,
+    csv_path: str = None,
+    strategy_type: str = "auto",  # 'auto', 'range', 'trend'
+    save_results: bool = True
+) -> Optional[Dict]:
+    """
+    Run comprehensive backtest with regime-aware strategy selection.
+    
+    Args:
+        data_source: "broker" or "csv"
+        config_path: Path to configuration file
+        symbol: Trading symbol for broker data
+        timeframe: Timeframe for broker data
+        initial_balance: Starting balance
+        csv_path: Path to CSV file if using CSV data
+        strategy_type: "auto" (regime-aware), "range", "trend"
+        save_results: Whether to save detailed results
+    
+    Returns:
+        Dict with comprehensive backtest results including regime analysis
+    """
+    print("=" * 80)
+    print("ARS-3 PROFESSIONAL BACKTEST ENGINE v4.0 (With Regime Detection)")
+    print("=" * 80)
+    
+    try:
+        # Load configuration
+        config = load_config(config_path)
+        logger.info(f"Configuration loaded from {config_path}")
+        
+        # Load data
+        print(f"Loading data from {data_source}...")
+        if data_source == "broker":
+            df = load_data_from_broker(symbol=symbol, timeframe=timeframe, limit=1000)
+        elif data_source == "csv":
+            if not csv_path:
+                raise ValueError("csv_path required for CSV data source")
+            df = load_data_from_csv(csv_path)
+        else:
+            raise ValueError("data_source must be 'broker' or 'csv'")
+        
+        if df is None or df.empty:
+            raise ValueError("Failed to load data")
+        
+        print(f"Data loaded: {len(df)} bars from {df['timestamp'].min()} to {df['timestamp'].max()}")
+        
+        # Initialize backtest engine
+        engine = BacktestEngine(config, initial_balance)
+        
+        # Run backtest
+        strategy_desc = "Regime-Aware (Auto)" if strategy_type == "auto" else strategy_type.title()
+        print(f"Running {strategy_desc} strategy backtest...")
+        start_time = datetime.now()
+        
+        results = engine.run_backtest(df, strategy_type)
+        
+        end_time = datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        print(f"Backtest completed in {execution_time:.2f} seconds")
+        
+        # Print results summary
+        print("\n" + "=" * 60)
+        print("BACKTEST RESULTS SUMMARY")
+        print("=" * 60)
+        
+        key_metrics = [
+            ('Initial Balance', f"${results['initial_balance']:,.2f}"),
+            ('Final Balance', f"${results['final_balance']:,.2f}"),
+            ('Total Return', f"{results['total_return_pct']:.2f}%"),
+            ('Max Drawdown', f"{results['max_drawdown_pct']:.2f}%"),
+            ('Total Trades', f"{results['total_trades']}"),
+            ('Win Rate', f"{results['win_rate_pct']:.1f}%"),
+            ('Profit Factor', f"{results['profit_factor']:.2f}"),
+            ('Sharpe Ratio', f"{results['sharpe_ratio']:.2f}")
+        ]
+        
+        for metric, value in key_metrics:
+            print(f"{metric:<20}: {value}")
+        
+        # Print regime analysis if available
+        if 'regime_analysis' in results:
+            regime_analysis = results['regime_analysis']
+            print(f"\n{'='*60}")
+            print("REGIME ANALYSIS")
+            print(f"{'='*60}")
+            
+            if 'regime_distribution' in regime_analysis:
+                print("Market Regime Distribution:")
+                for regime, pct in regime_analysis['regime_distribution'].items():
+                    print(f"  {regime.capitalize():<12}: {pct:.1f}%")
+            
+            if 'strategy_usage' in results:
+                print(f"\nStrategy Usage:")
+                for strategy, count in results['strategy_usage'].items():
+                    pct = (count / total_bars * 100) if total_bars > 0 else 0
+                    print(f"  {strategy.capitalize():<12}: {pct:.1f}% ({count} bars)")
+            
+            if 'regime_trades' in regime_analysis:
+                print(f"\nPerformance by Regime:")
+                for regime, stats in regime_analysis['regime_trades'].items():
+                    print(f"  {regime.capitalize()}:")
+                    print(f"    Trades: {stats['total_trades']}, Win Rate: {stats['win_rate_pct']:.1f}%")
+                    print(f"    Total P&L: ${stats['total_pnl']:.2f}, Avg P&L: ${stats['avg_pnl']:.2f}")
+        
+        # Save results if requested
+        if save_results:
+            try:
+                # Save equity curve
+                equity_df = pd.DataFrame(engine.equity_curve)
+                equity_df.to_csv("backtest_equity.csv", index=False)
+                
+                # Save trades
+                trades_df = pd.DataFrame(engine.trades)
+                trades_df.to_csv("backtest_trades.csv", index=False)
+                
+                # Save regime history if available
+                if engine.regime_history:
+                    regime_df = pd.DataFrame(engine.regime_history)
+                    regime_df.to_csv("backtest_regimes.csv", index=False)
+                
+                # Save metrics
+                with open("backtest_metrics.json", "w") as f:
+                    json.dump(results, f, indent=4, default=str)
+                
+                # Create visualizations
+                plot_results(engine)
+                
+                # Create regime analysis chart
+                if engine.include_regime_analysis:
+                    create_regime_analysis_chart(engine)
+                
+                # Create performance report
+                create_performance_report(engine)
+                
+                print("\nDetailed results saved:")
+                print("- backtest_equity.csv")
+                print("- backtest_trades.csv")
+                if engine.regime_history:
+                    print("- backtest_regimes.csv")
+                print("- backtest_metrics.json")
+                print("- backtest_results.png")
+                if engine.include_regime_analysis:
+                    print("- regime_analysis.png")
+                print("- backtest_report.html")
+                
+            except Exception as e:
+                logger.error(f"Error saving results: {e}")
+        
+        # Add backtest metadata
+        results.update({
+            'config': config,
+            'data_source': data_source,
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'strategy_type': strategy_type,
+            'data_bars': len(df),
+            'execution_time_seconds': execution_time,
+            'equity_curve': engine.equity_curve,
+            'trades': engine.trades,
+            'regime_history': engine.regime_history if engine.include_regime_analysis else []
+        })
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Backtest failed: {e}")
+        print(f"\nBacktest failed: {e}")
+        return None
+
 def create_performance_report(engine: BacktestEngine, save_path: str = "backtest_report.html") -> None:
-    """Create comprehensive HTML performance report."""
+    """Create comprehensive HTML performance report with regime analysis."""
     try:
         metrics = engine.calculate_metrics()
         
@@ -623,19 +990,52 @@ def create_performance_report(engine: BacktestEngine, save_path: str = "backtest
         # Create trades DataFrame
         trades_df = pd.DataFrame([t for t in engine.trades if 'net_pnl' in t])
         
+        # Regime analysis section
+        regime_section = ""
+        if engine.include_regime_analysis and engine.regime_history:
+            regime_analysis = engine.analyze_regime_performance()
+            
+            regime_section = """
+            <h2>Market Regime Analysis</h2>
+            <h3>Regime Distribution</h3>
+            """
+            
+            if 'regime_distribution' in regime_analysis:
+                regime_section += "<ul>"
+                for regime, pct in regime_analysis['regime_distribution'].items():
+                    regime_section += f"<li>{regime.capitalize()}: {pct:.1f}%</li>"
+                regime_section += "</ul>"
+            
+            if 'regime_trades' in regime_analysis:
+                regime_section += "<h3>Performance by Regime</h3><table border='1'>"
+                regime_section += "<tr><th>Regime</th><th>Trades</th><th>Win Rate</th><th>Total P&L</th><th>Avg P&L</th></tr>"
+                
+                for regime, stats in regime_analysis['regime_trades'].items():
+                    regime_section += f"""
+                    <tr>
+                        <td>{regime.capitalize()}</td>
+                        <td>{stats['total_trades']}</td>
+                        <td>{stats['win_rate_pct']:.1f}%</td>
+                        <td>${stats['total_pnl']:.2f}</td>
+                        <td>${stats['avg_pnl']:.2f}</td>
+                    </tr>
+                    """
+                regime_section += "</table>"
+        
         html_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
-            <title>ARS-3 Backtest Report</title>
+            <title>ARS-3 Backtest Report with Regime Analysis</title>
             <style>
                 body {{ font-family: Arial, sans-serif; margin: 20px; }}
                 .metric {{ display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ccc; }}
                 .positive {{ color: green; }}
                 .negative {{ color: red; }}
-                table {{ border-collapse: collapse; width: 100%; }}
+                table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
                 th, td {{ border: 1px solid #ddd; padding: 8px; text-align: right; }}
                 th {{ background-color: #f2f2f2; }}
+                .regime-section {{ background-color: #f9f9f9; padding: 15px; margin: 20px 0; border-radius: 5px; }}
             </style>
         </head>
         <body>
@@ -664,6 +1064,33 @@ def create_performance_report(engine: BacktestEngine, save_path: str = "backtest
             <div class="metric">
                 <strong>Sharpe Ratio:</strong> {metrics.get('sharpe_ratio', 0):.2f}
             </div>
+            
+            <div class="regime-section">
+                {regime_section}
+            </div>
+            
+            <h2>Trade Details</h2>
+            <div class="metric">
+                <strong>Total Trades:</strong> {metrics.get('total_trades', 0)}
+            </div>
+            <div class="metric">
+                <strong>Winning Trades:</strong> {metrics.get('winning_trades', 0)}
+            </div>
+            <div class="metric">
+                <strong>Losing Trades:</strong> {metrics.get('losing_trades', 0)}
+            </div>
+            <div class="metric">
+                <strong>Average Win:</strong> ${metrics.get('avg_win', 0):.2f}
+            </div>
+            <div class="metric">
+                <strong>Average Loss:</strong> ${metrics.get('avg_loss', 0):.2f}
+            </div>
+            <div class="metric">
+                <strong>Largest Win:</strong> ${metrics.get('largest_win', 0):.2f}
+            </div>
+            <div class="metric">
+                <strong>Largest Loss:</strong> ${metrics.get('largest_loss', 0):.2f}
+            </div>
         </body>
         </html>
         """
@@ -685,12 +1112,23 @@ def plot_results(engine: BacktestEngine, save_path: str = "backtest_results.png"
             logger.warning("No equity data to plot")
             return
         
-        fig, axes = plt.subplots(3, 1, figsize=(15, 12))
+        fig, axes = plt.subplots(4, 1, figsize=(15, 16))
         
-        # Equity curve
+        # Equity curve with regime coloring
         axes[0].plot(equity_df['timestamp'], equity_df['equity'], 'b-', linewidth=2, label='Equity')
         axes[0].axhline(y=engine.initial_balance, color='r', linestyle='--', alpha=0.7, label='Initial Balance')
-        axes[0].set_title('Equity Curve')
+        
+        # Color background by regime if available
+        if engine.include_regime_analysis and 'regime' in equity_df.columns:
+            regime_colors = {'trending': 'lightgreen', 'ranging': 'lightblue', 'compression': 'lightyellow', 'undefined': 'lightgray'}
+            
+            for i in range(len(equity_df) - 1):
+                regime = equity_df.iloc[i]['regime']
+                color = regime_colors.get(regime, 'white')
+                axes[0].axvspan(equity_df.iloc[i]['timestamp'], equity_df.iloc[i+1]['timestamp'], 
+                               alpha=0.3, color=color)
+        
+        axes[0].set_title('Equity Curve with Market Regimes')
         axes[0].set_ylabel('Balance (USDT)')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
@@ -719,7 +1157,7 @@ def plot_results(engine: BacktestEngine, save_path: str = "backtest_results.png"
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
         
-        # Trade PnL distribution
+        # Trade P&L distribution
         exit_pnls = [t['net_pnl'] for t in engine.trades if 'net_pnl' in t]
         if exit_pnls:
             axes[2].hist(exit_pnls, bins=20, alpha=0.7, color='purple', edgecolor='black')
@@ -728,6 +1166,25 @@ def plot_results(engine: BacktestEngine, save_path: str = "backtest_results.png"
             axes[2].set_xlabel('P&L per Trade (USDT)')
             axes[2].set_ylabel('Frequency')
             axes[2].grid(True, alpha=0.3)
+        
+        # Regime distribution (if available)
+        if engine.include_regime_analysis and engine.regime_history:
+            regime_counts = {}
+            for record in engine.regime_history:
+                regime = record['regime']
+                regime_counts[regime] = regime_counts.get(regime, 0) + 1
+            
+            if regime_counts:
+                regimes = list(regime_counts.keys())
+                counts = list(regime_counts.values())
+                colors = ['green' if r == 'trending' else 'blue' if r == 'ranging' else 'orange' if r == 'compression' else 'gray' for r in regimes]
+                
+                axes[3].pie(counts, labels=regimes, autopct='%1.1f%%', colors=colors)
+                axes[3].set_title('Market Regime Distribution')
+        else:
+            axes[3].text(0.5, 0.5, 'Regime Analysis Disabled', horizontalalignment='center', 
+                        verticalalignment='center', transform=axes[3].transAxes, fontsize=14)
+            axes[3].set_title('Market Regime Analysis')
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -738,157 +1195,16 @@ def plot_results(engine: BacktestEngine, save_path: str = "backtest_results.png"
     except Exception as e:
         logger.error(f"Error creating plots: {e}")
 
-def run_comprehensive_backtest(
-    data_source: str = "broker",
-    config_path: str = "ars3_config.yaml",
-    symbol: str = "BTC/USDT",
-    timeframe: str = "1h",
-    initial_balance: float = 10000,
-    csv_path: str = None,
-    strategy_type: str = "range",
-    save_results: bool = True
-) -> Optional[Dict]:
-    """
-    Run comprehensive backtest with full analysis and reporting.
-    
-    Args:
-        data_source: "broker" or "csv"
-        config_path: Path to configuration file
-        symbol: Trading symbol for broker data
-        timeframe: Timeframe for broker data
-        initial_balance: Starting balance
-        csv_path: Path to CSV file if using CSV data
-        strategy_type: "range" or "trend"
-        save_results: Whether to save detailed results
-    
-    Returns:
-        Dict with comprehensive backtest results
-    """
-    print("=" * 80)
-    print("ARS-3 PROFESSIONAL BACKTEST ENGINE v3.0")
-    print("=" * 80)
-    
-    try:
-        # Load configuration
-        config = load_config(config_path)
-        logger.info(f"Configuration loaded from {config_path}")
-        
-        # Load data
-        print(f"Loading data from {data_source}...")
-        if data_source == "broker":
-            df = load_data_from_broker(symbol=symbol, timeframe=timeframe, limit=1000)
-        elif data_source == "csv":
-            if not csv_path:
-                raise ValueError("csv_path required for CSV data source")
-            df = load_data_from_csv(csv_path)
-        else:
-            raise ValueError("data_source must be 'broker' or 'csv'")
-        
-        if df is None or df.empty:
-            raise ValueError("Failed to load data")
-        
-        print(f"Data loaded: {len(df)} bars from {df['timestamp'].min()} to {df['timestamp'].max()}")
-        
-        # Initialize backtest engine
-        engine = BacktestEngine(config, initial_balance)
-        
-        # Run backtest
-        print(f"Running {strategy_type} strategy backtest...")
-        start_time = datetime.now()
-        
-        results = engine.run_backtest(df, strategy_type)
-        
-        end_time = datetime.now()
-        execution_time = (end_time - start_time).total_seconds()
-        
-        print(f"Backtest completed in {execution_time:.2f} seconds")
-        
-        # Print results summary
-        print("\n" + "=" * 60)
-        print("BACKTEST RESULTS SUMMARY")
-        print("=" * 60)
-        
-        key_metrics = [
-            ('Initial Balance', f"${results['initial_balance']:,.2f}"),
-            ('Final Balance', f"${results['final_balance']:,.2f}"),
-            ('Total Return', f"{results['total_return_pct']:.2f}%"),
-            ('Max Drawdown', f"{results['max_drawdown_pct']:.2f}%"),
-            ('Total Trades', f"{results['total_trades']}"),
-            ('Win Rate', f"{results['win_rate_pct']:.1f}%"),
-            ('Profit Factor', f"{results['profit_factor']:.2f}"),
-            ('Sharpe Ratio', f"{results['sharpe_ratio']:.2f}"),
-            ('Total P&L', f"${results['total_pnl']:.2f}"),
-            ('Total Commission', f"${results['total_commission']:.2f}"),
-            ('Avg Win', f"${results['avg_win']:.2f}"),
-            ('Avg Loss', f"${results['avg_loss']:.2f}"),
-            ('Largest Win', f"${results['largest_win']:.2f}"),
-            ('Largest Loss', f"${results['largest_loss']:.2f}")
-        ]
-        
-        for metric, value in key_metrics:
-            print(f"{metric:<20}: {value}")
-        
-        # Save results if requested
-        if save_results:
-            try:
-                # Save equity curve
-                equity_df = pd.DataFrame(engine.equity_curve)
-                equity_df.to_csv("backtest_equity.csv", index=False)
-                
-                # Save trades
-                trades_df = pd.DataFrame(engine.trades)
-                trades_df.to_csv("backtest_trades.csv", index=False)
-                
-                # Save metrics
-                with open("backtest_metrics.json", "w") as f:
-                    json.dump(results, f, indent=4, default=str)
-                
-                # Create visualizations
-                plot_results(engine)
-                
-                # Create performance report
-                create_performance_report(engine)
-                
-                print("\nDetailed results saved:")
-                print("- backtest_equity.csv")
-                print("- backtest_trades.csv") 
-                print("- backtest_metrics.json")
-                print("- backtest_results.png")
-                print("- backtest_report.html")
-                
-            except Exception as e:
-                logger.error(f"Error saving results: {e}")
-        
-        # Add backtest metadata
-        results.update({
-            'config': config,
-            'data_source': data_source,
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'strategy_type': strategy_type,
-            'data_bars': len(df),
-            'execution_time_seconds': execution_time,
-            'equity_curve': engine.equity_curve,
-            'trades': engine.trades
-        })
-        
-        return results
-        
-    except Exception as e:
-        logger.error(f"Backtest failed: {e}")
-        print(f"\nBacktest failed: {e}")
-        return None
-
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="ARS-3 Professional Backtest Engine")
+    parser = argparse.ArgumentParser(description="ARS-3 Professional Backtest Engine with Regime Detection")
     parser.add_argument("--data-source", choices=["broker", "csv"], default="broker", help="Data source")
     parser.add_argument("--csv-path", help="Path to CSV file (required if data-source=csv)")
     parser.add_argument("--symbol", default="BTC/USDT", help="Trading symbol")
     parser.add_argument("--timeframe", default="1h", help="Timeframe")
     parser.add_argument("--balance", type=float, default=10000, help="Initial balance")
-    parser.add_argument("--strategy", choices=["range", "trend"], default="range", help="Strategy type")
+    parser.add_argument("--strategy", choices=["auto", "range", "trend"], default="auto", help="Strategy type")
     parser.add_argument("--config", default="ars3_config.yaml", help="Config file path")
     parser.add_argument("--no-save", action="store_true", help="Don't save results")
     
@@ -910,6 +1226,10 @@ if __name__ == "__main__":
             print(f"\nBacktest completed successfully!")
             print(f"Final Return: {results['total_return_pct']:.2f}%")
             print(f"Max Drawdown: {results['max_drawdown_pct']:.2f}%")
+            
+            if 'regime_analysis' in results:
+                total_regime_changes = results['regime_analysis'].get('regime_changes', 0)
+                print(f"Regime Changes: {total_regime_changes}")
         else:
             print("\nBacktest failed!")
             exit(1)

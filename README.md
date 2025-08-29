@@ -125,6 +125,7 @@ No additional installs needed beyond this—CCXT handles exchange APIs.
   **Chạy backtest** với broker data
     python ars3_backtest.py --data-source broker --symbol BTC/USDT --timeframe 1h --strategy range
 - **Testnet**: Set `testnet: True` for live-like testing on Binance testnet (fake funds).
+- Integration test: python integration_test.py
 
 ### 6. Monitoring & Logs
 - **Dashboard**: Real-time charts and tables.

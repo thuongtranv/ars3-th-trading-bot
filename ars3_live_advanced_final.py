@@ -48,6 +48,8 @@ try:
     SIMULATION_MODE = config.get("simulation_mode", True)
     COMMISSION_RATE = float(config.get("commission_rate", 0.0004))
     MAX_DAILY_LOSS = float(config.get("max_daily_loss", INITIAL_CAPITAL * 0.05))
+
+    IS_FUTURES = config.get("futures", False) # Added for futures check
     
     # Strategy configs
     RANGE_STRATEGY_CONFIG = config.get("rs75_strategy", {})
@@ -863,6 +865,12 @@ if __name__ == "__main__":
         mode = "SIMULATION" if SIMULATION_MODE else "LIVE TRADING"
         send_telegram(f"BOT STARTING UP\nMode: {mode}\nInitial Balance: ${INITIAL_CAPITAL:,.2f}\nRegime Detection: ENABLED")
         
+        # Thêm cảnh báo về Futures
+        if IS_FUTURES and not SIMULATION_MODE:
+            warning_msg = "WARNING: Futures mode is enabled, but the bot is NOT equipped to handle leverage and liquidations. This is extremely risky. Proceed with caution."
+            logger.warning(warning_msg)
+            send_telegram(warning_msg)
+        
         # Initialize broker
         if not init_broker():
             logger.critical("Failed to initialize broker, exiting")
@@ -899,20 +907,28 @@ if __name__ == "__main__":
         logger.info("Running initial trading cycle...")
         trading_loop()
         
-        # Schedule regular trading cycles
-        schedule.every(1).minutes.do(trading_loop)
-        logger.info("Trading scheduler initialized")
-        
-        send_telegram(f"BOT FULLY OPERATIONAL\nSymbol: {best_coin}\nMode: {mode}\nRegime Detection: Active")
-        logger.info("=" * 60)
-        logger.info("ARS-3 BOT FULLY OPERATIONAL WITH REGIME DETECTION")
-        logger.info("Press Ctrl+C to shutdown gracefully")
+        # Main trading loop with stable timing
+        logger.info("Trading scheduler initialized. Loop will run every 60 seconds.")
+        send_telegram(f"BOT FULLY OPERATIONAL\nSymbol: {best_coin}\nMode: {mode}")
         logger.info("=" * 60)
         
-        # Main execution loop
         while not shutdown_event.is_set():
-            schedule.run_pending()
-            time.sleep(1)
+            start_time = time.time()
+            
+            try:
+                trading_loop()
+            except Exception as e:
+                logger.error(f"Trading loop error: {e}")
+                send_telegram(f"Trading loop error: {str(e)[:150]}")
+            
+            # Ensure consistent timing
+            elapsed = time.time() - start_time
+            sleep_time = max(0, 60 - elapsed)
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                logger.warning(f"Trading loop took {elapsed:.1f}s - longer than 60s interval")
             
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")

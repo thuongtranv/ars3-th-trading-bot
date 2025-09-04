@@ -117,8 +117,19 @@ class MarketRegimeDetector:
         s_slope = self._scale(slope_abs, slope_lo, slope_hi)
         s_vol = self._scale(vol_z, -1.0, 2.0)
         
-        trend_score = (s_adx * 0.5) + (s_natr * 0.2) + (s_slope * 0.2) + (s_vol * 0.1)
-        range_score = ((1 - s_adx) * 0.5) + ((1 - s_natr) * 0.3) + ((1 - s_slope) * 0.2)
+        # === FIX START: Use weights from config file ===
+        trend_w = self.cfg.get("trend_weights", {"adx": 0.5, "natr": 0.2, "slope": 0.2, "volume": 0.1})
+        range_w = self.cfg.get("range_weights", {"adx": 0.5, "natr": 0.3, "slope": 0.2})
+
+        trend_score = (s_adx * trend_w.get('adx', 0.5) + 
+                       s_natr * trend_w.get('natr', 0.2) + 
+                       s_slope * trend_w.get('slope', 0.2) + 
+                       s_vol * trend_w.get('volume', 0.1))
+                       
+        range_score = ((1 - s_adx) * range_w.get('adx', 0.5) + 
+                       (1 - s_natr) * range_w.get('natr', 0.3) + 
+                       (1 - s_slope) * range_w.get('slope', 0.2))
+        # === FIX END ===
         
         self.last_scores = {
             "trend_score": round(trend_score, 3), "range_score": round(range_score, 3),

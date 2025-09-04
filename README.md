@@ -45,7 +45,7 @@ Clone the repository (or download files) and navigate to the project directory.
 
 Install required libraries:
 ```
-pip install ccxt pandas numpy matplotlib pyyaml python-dotenv streamlit schedule requests plotly psutil
+### pip install ccxt pandas numpy matplotlib pyyaml python-dotenv streamlit schedule requests plotly psutil
 pip install -r requirements.txt
 ```
 - **ccxt**: For exchange integration.

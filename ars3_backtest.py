@@ -1,5 +1,5 @@
 """
-ars3_backtest.py (v4.0 - Enhanced with Regime Detection)
+ars3_backtest.py (v4.1 - Complete Fixed Version)
 Professional-grade backtest engine with regime-aware strategy selection,
 realistic slippage, commission handling, and comprehensive analytics.
 """
@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import json
 import os
+import gc
 
 # Import strategy modules
 try:
@@ -485,6 +486,9 @@ class BacktestEngine:
                 results['regime_analysis'] = self.analyze_regime_performance()
                 results['strategy_usage'] = strategy_usage
             
+            # Memory cleanup
+            gc.collect()
+            
             logger.info(f"Backtest completed: Final balance ${self.balance:.2f}, Total return {results.get('total_return_pct', 0):.2f}%")
             
             return results
@@ -831,7 +835,7 @@ def run_comprehensive_backtest(
         Dict with comprehensive backtest results including regime analysis
     """
     print("=" * 80)
-    print("ARS-3 PROFESSIONAL BACKTEST ENGINE v4.0 (With Regime Detection)")
+    print("ARS-3 PROFESSIONAL BACKTEST ENGINE v4.1 (With Regime Detection)")
     print("=" * 80)
     
     try:
@@ -903,6 +907,7 @@ def run_comprehensive_backtest(
             
             if 'strategy_usage' in results:
                 print(f"\nStrategy Usage:")
+                total_bars = len(df)  # Fixed: define total_bars here
                 for strategy, count in results['strategy_usage'].items():
                     pct = (count / total_bars * 100) if total_bars > 0 else 0
                     print(f"  {strategy.capitalize():<12}: {pct:.1f}% ({count} bars)")
@@ -1188,7 +1193,7 @@ def plot_results(engine: BacktestEngine, save_path: str = "backtest_results.png"
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
         
         logger.info(f"Backtest charts saved to {save_path}")
         

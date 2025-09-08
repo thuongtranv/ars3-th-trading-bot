@@ -362,81 +362,81 @@ class BacktestEngine:
             return None
     
     
-def check_exit_conditions(self, bar_data: Dict, bar_index: int) -> List[Tuple[str, float, float]]:
-    """Check all exit conditions and return triggers (exit_type, price, percentage)."""
-    if self.current_position is None:
-        return []
+    def check_exit_conditions(self, bar_data: Dict, bar_index: int) -> List[Tuple[str, float, float]]:
+        """Check all exit conditions and return triggers (exit_type, price, percentage)."""
+        if self.current_position is None:
+            return []
 
-    position = self.current_position
-    current_high = bar_data['high']
-    current_low = bar_data['low']
-    current_close = bar_data['close']
+        position = self.current_position
+        current_high = bar_data['high']
+        current_low = bar_data['low']
+        current_close = bar_data['close']
 
-    exits = []
+        exits = []
 
-    # Position timeout check
-    bars_held = bar_index - position['entry_bar']
-    if bars_held >= self.position_timeout_bars:
-        exits.append(('TIMEOUT', bar_data['close'], 1.0))
-        return exits  # Timeout takes priority
+        # Position timeout check
+        bars_held = bar_index - position['entry_bar']
+        if bars_held >= self.position_timeout_bars:
+            exits.append(('TIMEOUT', bar_data['close'], 1.0))
+            return exits  # Timeout takes priority
 
-    if position['type'] == 'BUY':
-        # Long position exits
-        # 1. Stop Loss (highest priority)
-        if current_low <= position['stop_loss']:
-            exits.append(('STOP_LOSS', position['stop_loss'], 1.0))
-            return exits  # Stop loss takes priority over everything
-
-        # 2. Take Profit levels and trailing stop after TP1
-        if not position.get('has_hit_tp1', False) and current_high >= position['tp1']:
-            exits.append(('TAKE_PROFIT_1', position['tp1'], 0.5))  # Close 50%
-        elif position.get('has_hit_tp1', False):
-            # Update trailing stop based on stored ATR
-            atr_val = position.get('atr', None)
-            if atr_val is None or not np.isfinite(atr_val):
-                # fallback to bar range if no ATR
-                atr_val = (current_high - current_low)
-            # ATR trailing multiplier (2x by default)
-            new_stop = current_close - 2 * atr_val
-            if new_stop > position['stop_loss']:
-                position['stop_loss'] = new_stop
-            # If price hits trailing stop, exit remaining
+        if position['type'] == 'BUY':
+            # Long position exits
+            # 1. Stop Loss (highest priority)
             if current_low <= position['stop_loss']:
                 exits.append(('STOP_LOSS', position['stop_loss'], 1.0))
-                return exits
-            # Hard TP2
-            if current_high >= position['tp2']:
-                exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
+                return exits  # Stop loss takes priority over everything
+
+            # 2. Take Profit levels and trailing stop after TP1
+            if not position.get('has_hit_tp1', False) and current_high >= position['tp1']:
+                exits.append(('TAKE_PROFIT_1', position['tp1'], 0.5))  # Close 50%
+            elif position.get('has_hit_tp1', False):
+                # Update trailing stop based on stored ATR
+                atr_val = position.get('atr', None)
+                if atr_val is None or not np.isfinite(atr_val):
+                    # fallback to bar range if no ATR
+                    atr_val = (current_high - current_low)
+                # ATR trailing multiplier (2x by default)
+                new_stop = current_close - 2 * atr_val
+                if new_stop > position['stop_loss']:
+                    position['stop_loss'] = new_stop
+                # If price hits trailing stop, exit remaining
+                if current_low <= position['stop_loss']:
+                    exits.append(('STOP_LOSS', position['stop_loss'], 1.0))
+                    return exits
+                # Hard TP2
+                if current_high >= position['tp2']:
+                    exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
+            else:
+                # Check TP2 directly if no TP1 hit flag (rare)
+                if current_high >= position['tp2']:
+                    exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
+
         else:
-            # Check TP2 directly if no TP1 hit flag (rare)
-            if current_high >= position['tp2']:
-                exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
-
-    else:
-        # SHORT position exits (mirror logic)
-        if current_high >= position['stop_loss']:
-            exits.append(('STOP_LOSS', position['stop_loss'], 1.0))
-            return exits
-
-        if not position.get('has_hit_tp1', False) and current_low <= position['tp1']:
-            exits.append(('TAKE_PROFIT_1', position['tp1'], 0.5))
-        elif position.get('has_hit_tp1', False):
-            atr_val = position.get('atr', None)
-            if atr_val is None or not np.isfinite(atr_val):
-                atr_val = (current_high - current_low)
-            new_stop = current_close + 2 * atr_val
-            if new_stop < position['stop_loss']:
-                position['stop_loss'] = new_stop
+            # SHORT position exits (mirror logic)
             if current_high >= position['stop_loss']:
                 exits.append(('STOP_LOSS', position['stop_loss'], 1.0))
                 return exits
-            if current_low <= position['tp2']:
-                exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
-        else:
-            if current_low <= position['tp2']:
-                exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
 
-    return exits
+            if not position.get('has_hit_tp1', False) and current_low <= position['tp1']:
+                exits.append(('TAKE_PROFIT_1', position['tp1'], 0.5))
+            elif position.get('has_hit_tp1', False):
+                atr_val = position.get('atr', None)
+                if atr_val is None or not np.isfinite(atr_val):
+                    atr_val = (current_high - current_low)
+                new_stop = current_close + 2 * atr_val
+                if new_stop < position['stop_loss']:
+                    position['stop_loss'] = new_stop
+                if current_high >= position['stop_loss']:
+                    exits.append(('STOP_LOSS', position['stop_loss'], 1.0))
+                    return exits
+                if current_low <= position['tp2']:
+                    exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
+            else:
+                if current_low <= position['tp2']:
+                    exits.append(('TAKE_PROFIT_2', position['tp2'], 1.0))
+
+        return exits
 
 
     def run_backtest(self, df: pd.DataFrame, strategy_type: str = 'auto') -> Dict:

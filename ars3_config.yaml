@@ -62,27 +62,63 @@ rs75_strategy:
 
 # Strategy settings for Trend Follower
 trend_strategy:
-  # Technical indicators
   fast_ema_period: 12
   slow_ema_period: 26
+  macro_ema_period: 200
   adx_period: 14
-  adx_threshold: 25          # Minimum ADX for trend confirmation
+  adx_threshold: 22
   atr_period: 14
-  
-  # Signal validation
-  min_trend_strength: 0.02   # Minimum price move to confirm trend
-  pullback_tolerance: 0.3    # Allow 30% pullback from trend direction
-  
-  # Risk management
-  atr_sl_multiplier: 2.5     # Stop loss at 2.5x ATR
-  risk_pct: 0.01            # Risk per trade
-  max_position_hold_days: 10 # Max days to hold trend position
-  
-  # Exit rules
-  tp1_atr_multiple: 3.0      # First target at 3x ATR
-  tp2_atr_multiple: 6.0      # Second target at 6x ATR
-  use_trailing_stop: true    # Enable trailing stop
-  trail_distance_atr: 2.0    # Trail at 2x ATR distance
+
+  # Risk
+  base_risk_pct: 0.01
+  max_risk_pct: 0.03
+  adx_risk_scale_factor: 0.03
+
+  # TP/SL
+  tp1_risk_multiple: 1.5
+  tp2_risk_multiple: 3.0
+  sl_swing_period: 15
+  sl_atr_buffer_multiplier: 0.5
+
+  # HTF filter
+  use_htf_filter: true
+  htf_period_multiplier: 4
+
+  # Volatility filter
+  use_volatility_filter: true
+  volatility_min_pct: 0.0015
+  volatility_max_pct: 0.05
+
+  # Volume filter
+  use_volume_filter: true
+  volume_spike_multiplier: 3.0
+
+  # Extreme volatility filter
+  extreme_volatility_pct: 0.15
+
+  # Pullback
+  pullback_max_bars_since_cross: 15
+
+  # Trailing
+  trailing_atr_multiplier: 2.0
+
+  # Dynamic trailing
+  dynamic_trail_rr_threshold: 2.0
+  dynamic_trail_multiplier_tight: 1.5
+  dynamic_trail_multiplier_wide: 3.0
+
+  # Session filter
+  trade_start_hour_utc: null
+  trade_end_hour_utc: null
+
+  # Position sizing caps
+  max_position_notional_pct: 0.1
+
+  # Cooldown
+  cooldown_bars: 3
+
+  # Safety
+  max_daily_loss_pct: 0.05
 
 # Market Regime Detection (Professional Grade)
 regime_detection:

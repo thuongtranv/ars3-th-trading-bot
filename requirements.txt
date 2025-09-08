@@ -31,3 +31,7 @@ secure-smtplib>=0.1.1
 
 # File handling (optional)
 openpyxl>=3.0.0
+
+# Dashboard
+streamlit
+plotly

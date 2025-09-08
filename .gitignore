@@ -8,3 +8,6 @@ backtest_metrics.json
 backtest_report.html
 backtest_results.png
 backtest_trades.csv
+ars3_autostart.log
+ars3_bot.log
+equity_live.csv

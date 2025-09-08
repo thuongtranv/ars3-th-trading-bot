@@ -1,603 +1,293 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime, timedelta
 import time
 import os
 import logging
+import yaml
+import json
+import psutil
+from datetime import datetime
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+# --- SETUP ---
 st.set_page_config(
-    page_title="ARS-3 Advanced Dashboard", 
+    page_title="ARS-3 Dashboard",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS for a more professional look
 st.markdown("""
 <style>
-.metric-card {
-    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-    padding: 1rem;
-    border-radius: 10px;
-    color: white;
-    margin: 0.5rem 0;
-}
-.stAlert > div {
-    padding: 0.5rem;
-}
-.status-success {
-    background-color: #d4edda;
-    border: 1px solid #c3e6cb;
-    color: #155724;
-    padding: 0.5rem;
-    border-radius: 0.25rem;
-    margin: 0.5rem 0;
-}
-.status-error {
-    background-color: #f8d7da;
-    border: 1px solid #f5c6cb;
-    color: #721c24;
-    padding: 0.5rem;
-    border-radius: 0.25rem;
-    margin: 0.5rem 0;
-}
+    .metric-container {
+        border: 1px solid #2e3440;
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px;
+        background-color: #f8f9fa; /* Light background for metrics */
+    }
+    .stButton>button {
+        width: 100%;
+    }
+    .emergency-button button {
+        background-color: #d9534f;
+        color: white;
+        border-color: #d43f3a;
+    }
+    .emergency-button button:hover {
+        background-color: #c9302c;
+        border-color: #ac2925;
+    }
+    .resume-button button {
+        background-color: #5cb85c;
+        color: white;
+        border-color: #4cae4c;
+    }
+    .resume-button button:hover {
+        background-color: #449d44;
+        border-color: #398439;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("ARS-3 Advanced Live Bot Dashboard")
-st.markdown("---")
+# --- UTILITY FUNCTIONS ---
 
-# Sidebar controls
-st.sidebar.header("Dashboard Controls")
-show_trades = st.sidebar.checkbox("Show recent trades", True)
-show_equity = st.sidebar.checkbox("Show equity curve", True)
-show_metrics = st.sidebar.checkbox("Show performance metrics", True)
-show_position = st.sidebar.checkbox("Show current position", True)
-auto_refresh = st.sidebar.checkbox("Auto refresh (30s)", False)
-max_trades_display = st.sidebar.slider("Max trades to display", 5, 50, 10)
+# Find project base directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BOT_SCRIPT_NAME = "ars3_live.py"
+EMERGENCY_STOP_FILE = os.path.join(BASE_DIR, "EMERGENCY_STOP")
+POSITION_FILE = os.path.join(BASE_DIR, "position.json")
+EQUITY_FILE = os.path.join(BASE_DIR, "equity_live.csv")
+TRADES_FILE = os.path.join(BASE_DIR, "trades_live.csv")
+LOG_FILE = os.path.join(BASE_DIR, "ars3_bot.log")
 
-# Refresh interval
-refresh_interval = st.sidebar.selectbox(
-    "Refresh interval",
-    [10, 30, 60, 300],
-    index=1,
-    format_func=lambda x: f"{x}s" if x < 60 else f"{x//60}m"
-)
+@st.cache_data(ttl=15)
+def get_bot_status():
+    """Check if the main bot process is running."""
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if BOT_SCRIPT_NAME in " ".join(proc.info['cmdline']):
+                return "RUNNING", proc.info['pid']
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    if os.path.exists(EMERGENCY_STOP_FILE):
+        return "EMERGENCY STOP", None
+    return "STOPPED", None
 
-# Auto refresh functionality
-if auto_refresh:
-    placeholder = st.empty()
+@st.cache_data(ttl=15)
+def load_all_data():
+    """Load and process all required data files."""
+    data = {"trades": None, "equity": None, "position": None, "logs": "Log file not found."}
+    
+    # Load position
+    if os.path.exists(POSITION_FILE):
+        try:
+            with open(POSITION_FILE, 'r') as f:
+                pos_data = json.load(f)
+                if pos_data: data["position"] = pos_data
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # Load equity
+    if os.path.exists(EQUITY_FILE):
+        try:
+            equity_df = pd.read_csv(EQUITY_FILE)
+            equity_df['timestamp'] = pd.to_datetime(equity_df['timestamp'])
+            data["equity"] = equity_df
+        except Exception:
+            pass
+
+    # Load trades
+    if os.path.exists(TRADES_FILE):
+        try:
+            trades_df = pd.read_csv(TRADES_FILE)
+            trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'])
+            data["trades"] = trades_df.sort_values(by="timestamp", ascending=False)
+        except Exception:
+            pass
+
+    # Load logs
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                data["logs"] = "".join(lines[-50:]) # Last 50 lines
+        except Exception:
+            data["logs"] = "Error reading log file."
+            
+    return data
+
+def calculate_metrics(equity_df, trades_df):
+    """Calculate performance metrics from data."""
+    if equity_df is None or equity_df.empty:
+        return {}
+    
+    metrics = {}
+    initial_balance = equity_df['equity'].iloc[0]
+    current_balance = equity_df['equity'].iloc[-1]
+    metrics['total_return_pct'] = ((current_balance - initial_balance) / initial_balance) * 100
+    metrics['current_balance'] = current_balance
+    
+    peak = equity_df['equity'].expanding(min_periods=1).max()
+    drawdown = (equity_df['equity'] - peak) / peak
+    metrics['max_drawdown_pct'] = -drawdown.min() * 100
+    
+    if trades_df is not None and not trades_df.empty and 'pnl' in trades_df.columns:
+        exit_trades = trades_df[trades_df['pnl'].notna()]
+        metrics['total_trades'] = len(exit_trades)
+        metrics['total_pnl'] = exit_trades['pnl'].sum()
+        winning_trades = exit_trades[exit_trades['pnl'] > 0]
+        losing_trades = exit_trades[exit_trades['pnl'] < 0]
+        metrics['win_rate'] = (len(winning_trades) / metrics['total_trades'] * 100) if metrics['total_trades'] > 0 else 0
+        metrics['profit_factor'] = winning_trades['pnl'].sum() / abs(losing_trades['pnl'].sum()) if abs(losing_trades['pnl'].sum()) > 0 else float('inf')
+    else:
+        metrics.update({'total_trades': 0, 'total_pnl': 0, 'win_rate': 0, 'profit_factor': 0})
+        
+    return metrics
+
+def manage_emergency_stop(action):
+    """Create or remove the emergency stop file."""
+    if action == 'create' and not os.path.exists(EMERGENCY_STOP_FILE):
+        with open(EMERGENCY_STOP_FILE, 'w') as f:
+            f.write(f"STOPPED from dashboard at {datetime.now()}")
+        st.toast("🚨 EMERGENCY STOP ACTIVATED!", icon="🚨")
+    elif action == 'remove' and os.path.exists(EMERGENCY_STOP_FILE):
+        os.remove(EMERGENCY_STOP_FILE)
+        st.toast("✅ Trading Resumed!", icon="✅")
     time.sleep(1)
     st.rerun()
 
-# Enhanced data loading with validation
-@st.cache_data(ttl=30)
-def load_data():
-    """Load data with comprehensive error handling."""
-    trades_data = None
-    equity_data = None
-    position_data = None
-    
-    # Load trades data
-    try:
-        trades_file = "trades_live.csv"
-        if os.path.exists(trades_file) and os.path.getsize(trades_file) > 0:
-            trades_data = pd.read_csv(trades_file)
-            
-            # Validate required columns
-            if not trades_data.empty:
-                # Check for required columns
-                required_cols = ['timestamp', 'type']
-                missing_cols = [col for col in required_cols if col not in trades_data.columns]
-                
-                if missing_cols:
-                    logger.warning(f"Trades CSV missing columns: {missing_cols}")
-                    trades_data = None
-                else:
-                    # Convert timestamp with error handling
-                    try:
-                        trades_data['timestamp'] = pd.to_datetime(trades_data['timestamp'], errors='coerce')
-                        # Remove rows with invalid timestamps
-                        trades_data = trades_data.dropna(subset=['timestamp'])
-                        
-                        if trades_data.empty:
-                            logger.warning("All trades have invalid timestamps")
-                            trades_data = None
-                        else:
-                            # Sort by timestamp
-                            trades_data = trades_data.sort_values('timestamp').reset_index(drop=True)
-                    except Exception as e:
-                        logger.error(f"Error processing trades timestamps: {e}")
-                        trades_data = None
-            else:
-                trades_data = None
-    except Exception as e:
-        logger.error(f"Error loading trades data: {e}")
-        trades_data = None
-    
-    # Load equity data
-    try:
-        equity_file = "equity_live.csv"
-        if os.path.exists(equity_file) and os.path.getsize(equity_file) > 0:
-            equity_data = pd.read_csv(equity_file)
-            
-            if not equity_data.empty:
-                required_cols = ['timestamp', 'equity']
-                missing_cols = [col for col in required_cols if col not in equity_data.columns]
-                
-                if missing_cols:
-                    logger.warning(f"Equity CSV missing columns: {missing_cols}")
-                    equity_data = None
-                else:
-                    try:
-                        equity_data['timestamp'] = pd.to_datetime(equity_data['timestamp'], errors='coerce')
-                        equity_data = equity_data.dropna(subset=['timestamp', 'equity'])
-                        
-                        if equity_data.empty:
-                            equity_data = None
-                        else:
-                            equity_data = equity_data.sort_values('timestamp').reset_index(drop=True)
-                    except Exception as e:
-                        logger.error(f"Error processing equity data: {e}")
-                        equity_data = None
-            else:
-                equity_data = None
-    except Exception as e:
-        logger.error(f"Error loading equity data: {e}")
-        equity_data = None
-    
-    # Load position data
-    try:
-        position_file = "position.json"
-        if os.path.exists(position_file) and os.path.getsize(position_file) > 0:
-            import json
-            with open(position_file, 'r') as f:
-                position_data = json.load(f)
-                
-            # Validate position data structure
-            if not isinstance(position_data, dict) or not position_data:
-                position_data = None
-    except Exception as e:
-        logger.error(f"Error loading position data: {e}")
-        position_data = None
-    
-    return trades_data, equity_data, position_data
+# --- SIDEBAR ---
+st.sidebar.title("ARS-3 Mission Control")
+auto_refresh_interval = st.sidebar.slider("Auto-refresh (seconds)", 5, 60, 15, 5)
+auto_refresh = st.sidebar.toggle("Enable Auto-Refresh", value=True)
+st.sidebar.markdown("---")
+st.sidebar.header("Display Options")
+show_position = st.sidebar.checkbox("Show Current Position", True)
+show_metrics = st.sidebar.checkbox("Show Performance Metrics", True)
+show_equity = st.sidebar.checkbox("Show Equity & Regime Charts", True)
+show_trades = st.sidebar.checkbox("Show Recent Trades", True)
+show_logs = st.sidebar.checkbox("Show Live Logs", True)
 
-def safe_get_value(data, key, default="N/A"):
-    """Safely get value from data structure."""
-    try:
-        if isinstance(data, dict) and key in data:
-            return data[key]
-        elif hasattr(data, key):
-            return getattr(data, key)
-        else:
-            return default
-    except Exception:
-        return default
+# --- MAIN DASHBOARD ---
+st.title("ARS-3 Institutional Dashboard")
+st.caption(f"Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-def format_number(value, decimals=2, prefix="", suffix=""):
-    """Format number with error handling."""
-    try:
-        if pd.isna(value) or value is None:
-            return "N/A"
-        return f"{prefix}{value:.{decimals}f}{suffix}"
-    except (TypeError, ValueError):
-        return "N/A"
+# Load all data
+app_data = load_all_data()
+bot_status, bot_pid = get_bot_status()
+equity, trades, position = app_data["equity"], app_data["trades"], app_data["position"]
+metrics = calculate_metrics(equity, trades)
 
-def calculate_trade_stats(trades_data):
-    """Calculate trade statistics safely."""
-    try:
-        if trades_data is None or trades_data.empty:
-            return {}
-        
-        # Filter for trades with PnL data
-        pnl_trades = trades_data[trades_data['pnl'].notna()] if 'pnl' in trades_data.columns else pd.DataFrame()
-        
-        stats = {
-            'total_trades': len(trades_data[trades_data['type'].str.contains('BUY|SELL', na=False)]) if 'type' in trades_data.columns else 0,
-            'total_pnl': pnl_trades['pnl'].sum() if not pnl_trades.empty else 0,
-            'winning_trades': len(pnl_trades[pnl_trades['pnl'] > 0]) if not pnl_trades.empty else 0,
-            'losing_trades': len(pnl_trades[pnl_trades['pnl'] < 0]) if not pnl_trades.empty else 0,
-            'avg_win': pnl_trades[pnl_trades['pnl'] > 0]['pnl'].mean() if not pnl_trades.empty and (pnl_trades['pnl'] > 0).any() else 0,
-            'avg_loss': pnl_trades[pnl_trades['pnl'] < 0]['pnl'].mean() if not pnl_trades.empty and (pnl_trades['pnl'] < 0).any() else 0
-        }
-        
-        # Calculate win rate
-        stats['win_rate'] = (stats['winning_trades'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
-        
-        return stats
-    except Exception as e:
-        logger.error(f"Error calculating trade stats: {e}")
-        return {}
+# --- TOP STATUS BAR ---
+st.header("System At-a-Glance")
+cols = st.columns(4)
 
-# Load the data
-trades, equity, position = load_data()
+status_color = {"RUNNING": "green", "STOPPED": "orange", "EMERGENCY STOP": "red"}
+cols[0].metric("Bot Status", bot_status, delta=f"PID: {bot_pid}" if bot_pid else "N/A", delta_color="off")
+st.markdown(f"<div style='margin-top:-2.2em; text-align:left; color:{status_color.get(bot_status, 'grey')};'>●</div>", unsafe_allow_html=True)
 
-# Status indicators
-st.subheader("System Status")
-col1, col2, col3, col4 = st.columns(4)
+current_regime = equity['regime'].iloc[-1] if equity is not None and 'regime' in equity.columns and not equity.empty else "Undefined"
+cols[1].metric("Market Regime", current_regime.upper())
 
-with col1:
-    if trades is not None:
-        st.success("Trades Data: Connected")
-    else:
-        st.error("Trades Data: No Data")
+active_strategy = position.get("strategy", "Idle").capitalize() if position else "Idle"
+cols[2].metric("Active Strategy", active_strategy)
 
-with col2:
-    if equity is not None:
-        st.success("Equity Data: Connected")  
-    else:
-        st.error("Equity Data: No Data")
+daily_pnl = equity['daily_pnl'].iloc[-1] if equity is not None and 'daily_pnl' in equity.columns and not equity.empty else 0
+cols[3].metric("Daily PnL", f"${daily_pnl:,.2f}", delta=f"{daily_pnl:,.2f}", delta_color="normal" if daily_pnl >= 0 else "inverse")
 
-with col3:
-    if position is not None and position:
-        st.warning("Position: ACTIVE")
-    else:
-        st.info("Position: None")
+st.markdown("---")
 
-with col4:
-    st.info(f"Last Updated: {datetime.now().strftime('%H:%M:%S')}")
-
-# Current position status
+# --- CURRENT POSITION ---
 if show_position and position:
-    st.subheader("Current Position")
+    st.header("Current Position")
+    p_cols = st.columns(5)
+    p_cols[0].metric("Symbol", position.get("symbol", "N/A"))
+    p_cols[1].metric("Type", position.get("type", "N/A"))
+    p_cols[2].metric("Entry Price", f"{position.get('entry_price', 0):,.4f}")
+    p_cols[3].metric("Size", f"{position.get('size', 0):.6f}")
+    p_cols[4].metric("Stop Loss", f"{position.get('stop_loss', 0):,.4f}")
+
+# --- PERFORMANCE METRICS ---
+if show_metrics:
+    st.header("Performance Metrics")
+    m_cols = st.columns(5)
+    m_cols[0].metric("Total Return", f"{metrics.get('total_return_pct', 0):.2f}%")
+    m_cols[1].metric("Current Balance", f"${metrics.get('current_balance', 0):,.2f}")
+    m_cols[2].metric("Max Drawdown", f"{metrics.get('max_drawdown_pct', 0):.2f}%")
+    m_cols[3].metric("Total Trades", f"{metrics.get('total_trades', 0)}")
+    m_cols[4].metric("Win Rate", f"{metrics.get('win_rate', 0):.2f}%")
     
-    try:
-        pos_col1, pos_col2, pos_col3, pos_col4 = st.columns(4)
-        
-        with pos_col1:
-            st.metric("Symbol", safe_get_value(position, 'symbol'))
-        
-        with pos_col2:
-            pos_type = safe_get_value(position, 'type')
-            st.metric("Type", pos_type)
-        
-        with pos_col3:
-            entry_price = safe_get_value(position, 'entry_price', 0)
-            st.metric("Entry Price", format_number(entry_price, 4))
-        
-        with pos_col4:
-            size = safe_get_value(position, 'size', 0)
-            st.metric("Size", format_number(size, 6))
-        
-        # Additional position details
-        pos_col5, pos_col6, pos_col7, pos_col8 = st.columns(4)
-        
-        with pos_col5:
-            stop_loss = safe_get_value(position, 'stop_loss', 0)
-            st.metric("Stop Loss", format_number(stop_loss, 4))
-        
-        with pos_col6:
-            tp1 = safe_get_value(position, 'tp1', 0)
-            st.metric("TP1", format_number(tp1, 4))
-        
-        with pos_col7:
-            tp2 = safe_get_value(position, 'tp2', 0)
-            st.metric("TP2", format_number(tp2, 4))
-        
-        with pos_col8:
-            has_hit_tp1 = safe_get_value(position, 'has_hit_tp1', False)
-            st.metric("TP1 Hit", "Yes" if has_hit_tp1 else "No")
-            
-    except Exception as e:
-        st.error(f"Error displaying position: {e}")
-
-# Trading status
-st.subheader("Trading Status")
-
-if trades is not None and not trades.empty:
-    try:
-        # Get current trading pair
-        if 'symbol' in trades.columns:
-            current_symbol = trades['symbol'].iloc[-1]
-        else:
-            current_symbol = "N/A"
-        
-        # Get last trade info
-        last_trade_time = trades['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')
-        last_trade_type = trades['type'].iloc[-1] if 'type' in trades.columns else "Unknown"
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Current Symbol", current_symbol)
-        with col2:
-            st.metric("Last Trade", last_trade_type)
-        with col3:
-            st.metric("Last Activity", last_trade_time)
-    except Exception as e:
-        st.error(f"Error displaying trading status: {e}")
-else:
-    st.warning("No trading data available. Make sure the bot is running!")
-
-# Performance metrics
-if show_metrics and equity is not None and not equity.empty:
-    st.subheader("Performance Metrics")
-    
-    try:
-        # Calculate equity metrics
-        initial_balance = equity['equity'].iloc[0]
-        current_balance = equity['equity'].iloc[-1]
-        total_return = ((current_balance - initial_balance) / initial_balance) * 100
-        
-        # Calculate drawdown
-        peak = equity['equity'].expanding().max()
-        drawdown = ((peak - equity['equity']) / peak * 100)
-        max_drawdown = drawdown.max()
-        
-        # Get trade statistics
-        trade_stats = calculate_trade_stats(trades)
-        
-        # Display metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric(
-                "Total Return", 
-                format_number(total_return, 2, suffix="%"),
-                delta=format_number(total_return, 2, suffix="%")
-            )
-        
-        with col2:
-            st.metric(
-                "Current Balance", 
-                format_number(current_balance, 2, prefix="$"),
-                delta=format_number(current_balance - initial_balance, 2, prefix="$")
-            )
-        
-        with col3:
-            st.metric(
-                "Max Drawdown",
-                format_number(max_drawdown, 2, suffix="%")
-            )
-        
-        with col4:
-            st.metric("Total Trades", trade_stats.get('total_trades', 0))
-        
-        with col5:
-            win_rate = trade_stats.get('win_rate', 0)
-            st.metric("Win Rate", format_number(win_rate, 1, suffix="%"))
-        
-        # Additional metrics row
-        col6, col7, col8, col9, col10 = st.columns(5)
-        
-        with col6:
-            st.metric("Total PnL", format_number(trade_stats.get('total_pnl', 0), 2, prefix="$"))
-        
-        with col7:
-            st.metric("Avg Win", format_number(trade_stats.get('avg_win', 0), 2, prefix="$"))
-        
-        with col8:
-            st.metric("Avg Loss", format_number(trade_stats.get('avg_loss', 0), 2, prefix="$"))
-        
-        with col9:
-            winning_trades = trade_stats.get('winning_trades', 0)
-            st.metric("Winning Trades", winning_trades)
-        
-        with col10:
-            losing_trades = trade_stats.get('losing_trades', 0)
-            st.metric("Losing Trades", losing_trades)
-            
-    except Exception as e:
-        st.error(f"Error calculating performance metrics: {e}")
-
-# Equity curve visualization
+# --- EQUITY & REGIME CHARTS ---
 if show_equity and equity is not None and not equity.empty:
-    st.subheader("Equity Curve")
+    st.header("Performance Visuals")
     
-    try:
-        # Create main equity chart
-        fig = go.Figure()
+    # Equity Curve
+    fig_eq = go.Figure()
+    fig_eq.add_trace(go.Scatter(x=equity["timestamp"], y=equity["equity"], mode='lines', name='Equity', line=dict(color='#1f77b4')))
+    fig_eq.update_layout(title="Equity Curve", yaxis_title="Balance (USDT)", template="plotly_white")
+    st.plotly_chart(fig_eq, use_container_width=True)
+    
+    # Regime Chart
+    if 'regime' in equity.columns:
+        regime_map = {"trending": 1, "ranging": -1, "compression": 0, "undefined": 0.5}
+        equity['regime_numeric'] = equity['regime'].map(regime_map).fillna(0.5)
         
-        # Add equity line
-        fig.add_trace(go.Scatter(
-            x=equity["timestamp"], 
-            y=equity["equity"],
-            mode='lines',
-            name='Equity',
-            line=dict(color='#1f77b4', width=2),
-            hovertemplate='<b>Time:</b> %{x}<br><b>Equity:</b> $%{y:.2f}<extra></extra>'
+        fig_regime = go.Figure()
+        fig_regime.add_trace(go.Scatter(
+            x=equity["timestamp"], y=equity["regime_numeric"], mode='lines',
+            line_shape='hv', name='Market Regime', line=dict(color='#ff7f0e')
         ))
-        
-        # Add initial balance reference line
-        initial_balance = equity['equity'].iloc[0]
-        fig.add_hline(
-            y=initial_balance, 
-            line_dash="dash", 
-            line_color="red",
-            annotation_text="Initial Balance"
-        )
-        
-        fig.update_layout(
-            title="Equity Curve Over Time",
-            xaxis_title="Time",
-            yaxis_title="Equity (USDT)",
-            hovermode='x unified',
-            showlegend=True,
-            height=500,
+        fig_regime.update_layout(
+            title="Market Regime Over Time",
+            yaxis=dict(
+                tickmode='array',
+                tickvals=[1, 0, -1],
+                ticktext=['Trending', 'Compression', 'Ranging']
+            ),
             template="plotly_white"
         )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Add drawdown chart
-        if len(equity) > 1:
-            peak = equity['equity'].expanding().max()
-            drawdown = (peak - equity['equity']) / peak * 100
-            
-            fig_dd = go.Figure()
-            fig_dd.add_trace(go.Scatter(
-                x=equity["timestamp"],
-                y=-drawdown,
-                mode='lines',
-                fill='tozeroy',
-                fillcolor='rgba(255, 0, 0, 0.3)',
-                line=dict(color='red'),
-                name='Drawdown %',
-                hovertemplate='<b>Time:</b> %{x}<br><b>Drawdown:</b> %{y:.2f}%<extra></extra>'
-            ))
-            
-            fig_dd.update_layout(
-                title="Drawdown Over Time",
-                xaxis_title="Time", 
-                yaxis_title="Drawdown (%)",
-                height=300,
-                template="plotly_white"
-            )
-            
-            st.plotly_chart(fig_dd, use_container_width=True)
-            
-    except Exception as e:
-        st.error(f"Error creating equity charts: {e}")
+        st.plotly_chart(fig_regime, use_container_width=True)
 
-# Recent trades table
+# --- RECENT TRADES ---
 if show_trades and trades is not None and not trades.empty:
-    st.subheader("Recent Trades")
+    st.header("Recent Trades")
+    display_trades = trades.head(20)
+    # Ensure all required columns exist, adding them with default values if not
+    for col in ['symbol', 'type', 'price', 'size', 'pnl', 'strategy', 'reason']:
+        if col not in display_trades.columns:
+            display_trades[col] = "N/A"
     
-    try:
-        # Get recent trades
-        recent_trades = trades.tail(max_trades_display).copy()
-        
-        # Prepare display data
-        if not recent_trades.empty:
-            display_data = []
-            
-            for _, trade in recent_trades.iterrows():
-                row = {
-                    'Time': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(trade['timestamp']) else 'N/A',
-                    'Symbol': safe_get_value(trade, 'symbol'),
-                    'Type': safe_get_value(trade, 'type'),
-                    'Price': format_number(safe_get_value(trade, 'price', 0), 4),
-                    'Size': format_number(safe_get_value(trade, 'size', 0), 6)
-                }
-                
-                # Add PnL if available
-                if 'pnl' in trade and pd.notna(trade['pnl']):
-                    row['PnL'] = format_number(trade['pnl'], 2, prefix="$")
-                
-                # Add reason if available
-                if 'reason' in trade and pd.notna(trade['reason']):
-                    row['Reason'] = str(trade['reason'])[:50] + "..." if len(str(trade['reason'])) > 50 else str(trade['reason'])
-                
-                display_data.append(row)
-            
-            # Create DataFrame and display
-            display_df = pd.DataFrame(display_data)
-            display_df = display_df.sort_values('Time', ascending=False).reset_index(drop=True)
-            
-            # Style the dataframe
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                height=400
-            )
-        else:
-            st.info("No recent trades to display")
-            
-    except Exception as e:
-        st.error(f"Error displaying recent trades: {e}")
+    st.dataframe(display_trades[[
+        'timestamp', 'symbol', 'type', 'price', 'size', 'pnl', 'strategy', 'reason'
+    ]], hide_index=True, use_container_width=True)
 
-# System information
-st.subheader("System Information")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    try:
-        if os.path.exists("ars3_bot.log"):
-            log_size = os.path.getsize("ars3_bot.log") / 1024  # KB
-            st.metric("Log File Size", f"{log_size:.1f} KB")
-        else:
-            st.metric("Log File Size", "N/A")
-    except Exception:
-        st.metric("Log File Size", "Error")
-
-with col2:
-    try:
-        if trades is not None:
-            data_age = datetime.now() - trades['timestamp'].max()
-            st.metric("Data Age", f"{data_age.seconds // 60} min")
-        else:
-            st.metric("Data Age", "N/A")
-    except Exception:
-        st.metric("Data Age", "Error")
-
-with col3:
-    st.metric("Refresh Rate", f"{refresh_interval}s")
-
-# Footer
+# --- LIVE LOGS & CONTROLS ---
 st.markdown("---")
-col1, col2 = st.columns(2)
+log_cols = st.columns([2, 1])
 
-with col1:
-    st.caption(f"Dashboard updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+with log_cols[0]:
+    if show_logs:
+        st.subheader("Live Log Viewer")
+        st.text_area("Last 50 log entries", value=app_data["logs"], height=300, disabled=True)
 
-with col2:
-    if auto_refresh:
-        st.caption(f"Auto-refresh: ON ({refresh_interval}s)")
-    else:
-        st.caption("Auto-refresh: OFF")
-
-# Control buttons
-st.subheader("Controls")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("Manual Refresh", type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-
-with col2:
-    if st.button("Clear Cache"):
-        st.cache_data.clear()
-        st.success("Cache cleared!")
-
-with col3:
-    if st.button("Download Data"):
-        try:
-            if trades is not None:
-                csv = trades.to_csv(index=False)
-                st.download_button(
-                    label="Download Trades CSV",
-                    data=csv,
-                    file_name=f"trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-        except Exception as e:
-            st.error(f"Error preparing download: {e}")
-
-# Error recovery section
-with st.expander("Troubleshooting"):
-    st.write("""
-    **Common Issues:**
-    - **No Data**: Make sure the bot is running and generating trades
-    - **Stale Data**: Check if bot process is active and not crashed
-    - **Chart Errors**: Try refreshing the page or clearing cache
-    - **Performance Issues**: Reduce max trades display or disable auto-refresh
+with log_cols[1]:
+    st.subheader("Emergency Controls")
+    st.warning("Use with caution. This directly controls the bot.")
     
-    **File Locations:**
-    - Trades: `trades_live.csv`
-    - Equity: `equity_live.csv`
-    - Position: `position.json`
-    - Logs: `ars3_bot.log`
-    """)
+    with st.container():
+        st.markdown('<div class="emergency-button">', unsafe_allow_html=True)
+        if st.button("🚨 EMERGENCY STOP", key="stop_button", help="Stops the bot and prevents restarts."):
+            manage_emergency_stop('create')
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    if st.button("Check Files"):
-        files_status = {}
-        for filename in ["trades_live.csv", "equity_live.csv", "position.json", "ars3_bot.log"]:
-            if os.path.exists(filename):
-                try:
-                    size = os.path.getsize(filename)
-                    modified = datetime.fromtimestamp(os.path.getmtime(filename))
-                    files_status[filename] = f"Size: {size} bytes, Modified: {modified.strftime('%Y-%m-%d %H:%M:%S')}"
-                except Exception as e:
-                    files_status[filename] = f"Error: {e}"
-            else:
-                files_status[filename] = "File not found"
+    with st.container():
+        st.markdown('<div class="resume-button">', unsafe_allow_html=True)
+        if st.button("✅ Resume Trading", key="resume_button", help="Removes the emergency stop file."):
+            manage_emergency_stop('remove')
+        st.markdown('</div>', unsafe_allow_html=True)
         
-        for filename, status in files_status.items():
-            st.write(f"**{filename}**: {status}")
+# --- AUTO-REFRESH LOGIC ---
+if auto_refresh:
+    time.sleep(auto_refresh_interval)
+    st.rerun()

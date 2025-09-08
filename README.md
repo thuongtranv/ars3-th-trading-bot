@@ -20,7 +20,7 @@ ARS-3 is a sophisticated, production-ready automated cryptocurrency trading bot 
 
 ### Core Trading Components
 ```
-ars3_live_advanced_final.py     # Main trading engine with regime detection
+ars3_live.py                     # Main trading engine with regime detection
 ars3_strategy_rs75.py            # Range scalping strategy (Bollinger Bands + RSI)
 ars3_strategy_trend.py           # Trend following strategy (EMA crossover + ADX)
 ars3_strategy_utils.py           # Market regime detector and utilities  
@@ -137,7 +137,7 @@ python ars3_autostart.py
 #### Option B: Individual Components (Manual Control)
 ```bash
 # 1. Main trading bot
-python ars3_live_advanced_final.py
+python ars3_live.py
 
 # 2. Daily reports (run separately or schedule)
 python ars3_report_daily.py
@@ -468,7 +468,7 @@ Optimize performance by adjusting parameters in `ars3_config.yaml`:
 ```
 ARS-3-Professional-Trading-System/
 ├── Core Trading Engine
-│   ├── ars3_live_advanced_final.py     # Main trading engine with regime detection
+│   ├── ars3_live.py                    # Main trading engine with regime detection
 │   ├── ars3_broker_ccxt.py             # Exchange integration and order execution
 │   ├── ars3_config.yaml                # Comprehensive system configuration
 │   └── .env                            # Environment variables (API keys)
@@ -508,7 +508,7 @@ ARS-3-Professional-Trading-System/
 python ars3_autostart.py
 
 # Manual trading bot (for development/testing)
-python ars3_live_advanced_final.py
+python ars3_live.py
 
 # Generate daily performance report
 python ars3_report_daily.py
@@ -699,7 +699,7 @@ ARS-3 is a sophisticated, production-ready automated cryptocurrency trading bot 
 
 ### Core Components
 ```
-ars3_live_advanced_final.py     # Main trading engine with regime detection
+ars3_live.py                     # Main trading engine with regime detection
 ars3_strategy_rs75.py            # Range scalping strategy (Bollinger Bands + RSI)
 ars3_strategy_trend.py           # Trend following strategy (EMA crossover + ADX)
 ars3_strategy_utils.py           # Market regime detector and utilities  

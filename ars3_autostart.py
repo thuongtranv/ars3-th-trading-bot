@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_SCRIPT = os.path.join(BASE_DIR, "ars3_live_advanced_final.py")
+BOT_SCRIPT = os.path.join(BASE_DIR, "ars3_live.py")
 DASH_SCRIPT = os.path.join(BASE_DIR, "streamlit_ars3_advanced.py")
 CONFIG_FILE = os.path.join(BASE_DIR, "ars3_config.yaml")
 EMERGENCY_STOP_FILE = os.path.join(BASE_DIR, "EMERGENCY_STOP")

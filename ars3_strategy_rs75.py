@@ -72,7 +72,8 @@ def calculate_sma(series: pd.Series, period: int) -> pd.Series:
     try:
         if len(series) < period:
             return pd.Series(index=series.index, dtype=float)
-        return series.rolling(window=period, min_periods=1).mean().fillna(method='bfill')
+        # Fixed: Replace deprecated fillna(method='bfill')
+        return series.rolling(window=period, min_periods=1).mean().bfill()
     except Exception as e:
         logger.error(f"SMA calculation error: {e}")
         return pd.Series(index=series.index, dtype=float)
@@ -166,7 +167,8 @@ def calculate_bollinger_bands(series: pd.Series, period: int = 20, std_dev: floa
     """Calculate Bollinger Bands."""
     try:
         sma = calculate_sma(series, period)
-        std = series.rolling(window=period, min_periods=1).std().fillna(method='bfill')
+        # Fixed: Replace deprecated fillna(method='bfill')
+        std = series.rolling(window=period, min_periods=1).std().bfill()
         
         upper = sma + (std * std_dev)
         lower = sma - (std * std_dev)

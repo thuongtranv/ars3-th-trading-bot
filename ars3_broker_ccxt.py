@@ -180,8 +180,8 @@ class Broker:
             time.sleep(sleep_time)
         self.last_request_time = time.time()
 
-    def fetch_ohlcv(self, limit=200, symbol=None) -> List:
-        """Fetch OHLCV data with comprehensive error handling"""
+    def fetch_ohlcv(self, limit=200, symbol=None, timeout=15) -> List:
+        """Fetch OHLCV data with timeout protection and comprehensive error handling"""
         if not symbol:
             symbol = self.symbol
             
@@ -200,10 +200,21 @@ class Broker:
                         if not self.connected:
                             return self._generate_simulation_data(limit)
                     
-                    data = self.exchange.fetch_ohlcv(symbol, timeframe=self.timeframe, limit=limit)
+                    # Set request timeout on the exchange
+                    original_timeout = self.exchange.timeout
+                    self.exchange.timeout = timeout * 1000  # Convert to milliseconds
+                    
+                    try:
+                        data = self.exchange.fetch_ohlcv(symbol, timeframe=self.timeframe, limit=limit)
+                    finally:
+                        # Restore original timeout
+                        self.exchange.timeout = original_timeout
                     
                     if not data:
                         logger.warning("Empty OHLCV data received")
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** attempt)
+                            continue
                         return []
                     
                     # Validate data structure
@@ -216,7 +227,7 @@ class Broker:
                         
                         # Basic validation
                         if any(x is None or (isinstance(x, (int, float)) and x <= 0) 
-                               for x in [open_p, high, low, close]):
+                            for x in [open_p, high, low, close]):
                             continue
                         
                         if high < low or high < max(open_p, close) or low > min(open_p, close):
@@ -225,8 +236,14 @@ class Broker:
                         validated_data.append(candle)
                     
                     self.last_heartbeat = time.time()
-                    logger.info(f"Fetched {len(validated_data)} valid candles for {symbol}")
+                    logger.debug(f"Fetched {len(validated_data)} valid candles for {symbol}")
                     return validated_data
+                
+            except ccxt.RequestTimeout as e:
+                logger.warning(f"Request timeout on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
                 
             except ccxt.NetworkError as e:
                 logger.warning(f"Network error on attempt {attempt + 1}: {e}")
@@ -243,7 +260,7 @@ class Broker:
                 logger.error(f"Unexpected error fetching OHLCV: {e}")
         
         # Fallback to simulation data
-        logger.warning("Falling back to simulation data")
+        logger.warning("Falling back to simulation data after all retries failed")
         return self._generate_simulation_data(limit)
 
     def _generate_simulation_data(self, limit):
@@ -309,8 +326,8 @@ class Broker:
             logger.error(f"Error generating simulation data: {e}")
             return []
 
-    def get_balance(self) -> Dict:
-        """Get account balance with error handling and validation"""
+    def get_balance(self, timeout=10) -> Dict:
+        """Get account balance with timeout protection and error handling"""
         if self.simulation_mode or not self.exchange:
             capital = self.config.get('initial_capital', 10000)
             return {
@@ -330,7 +347,15 @@ class Broker:
                         if not self.connected:
                             break
                     
-                    balance = self.exchange.fetch_balance()
+                    # Set request timeout
+                    original_timeout = self.exchange.timeout
+                    self.exchange.timeout = timeout * 1000
+                    
+                    try:
+                        balance = self.exchange.fetch_balance()
+                    finally:
+                        self.exchange.timeout = original_timeout
+                    
                     self.last_heartbeat = time.time()
                     
                     # Validate balance structure
@@ -338,8 +363,14 @@ class Broker:
                         logger.error("Invalid balance format received")
                         continue
                     
-                    logger.info("Successfully fetched account balance")
+                    logger.debug("Successfully fetched account balance")
                     return balance
+                    
+            except ccxt.RequestTimeout as e:
+                logger.warning(f"Request timeout fetching balance (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
                     
             except ccxt.NetworkError as e:
                 logger.warning(f"Network error fetching balance (attempt {attempt + 1}): {e}")

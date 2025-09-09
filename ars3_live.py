@@ -450,14 +450,22 @@ def trading_loop():
         
         for attempt in range(max_retries):
             try:
-                ohlcv_base = broker.fetch_ohlcv(limit=300, symbol=best_coin)  # Increased for regime detection
+                # Add timeout to broker call
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(broker.fetch_ohlcv, 300, best_coin)
+                    ohlcv_base = future.result(timeout=10)  # 10 second timeout
+                    
                 if ohlcv_base:
                     break
                 logger.warning(f"Empty data received (attempt {attempt + 1})")
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"Data fetch timeout (attempt {attempt + 1})")
             except Exception as e:
                 logger.warning(f"Data fetch attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+            
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
         
         if not ohlcv_base:
             logger.error("Failed to fetch market data after all retries")
@@ -775,8 +783,8 @@ def system_monitor():
             last_check = system_health.get("last_check", current_time)
             
             if (current_time - last_check).total_seconds() > 300:  # 5 minutes
-                logger.warning("Trading loop appears stuck - no activity for 5 minutes")
                 send_telegram("WARNING: Trading loop appears inactive for 5 minutes")
+                logger.warning("Trading loop appears stuck - no activity for 5 minutes")
             
             # Check file sizes and disk space
             try:
@@ -876,6 +884,22 @@ def graceful_shutdown(signum, frame):
     
     sys.exit(0)
 
+def trading_loop_with_timeout():
+    """Wrapper for trading loop with timeout protection"""
+    import concurrent.futures
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(trading_loop)
+        try:
+            # Timeout after 50 seconds to ensure 60-second cycle
+            future.result(timeout=50)
+        except concurrent.futures.TimeoutError:
+            logger.error("Trading loop timeout - took longer than 50 seconds")
+            send_telegram("⚠️ Trading loop timeout detected - check system")
+            # Don't kill the thread, let it complete but log the issue
+        except Exception as e:
+            logger.error(f"Trading loop executor error: {e}")
+
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
     # Setup signal handlers
@@ -938,23 +962,44 @@ if __name__ == "__main__":
         send_telegram(f"BOT FULLY OPERATIONAL\nSymbol: {best_coin}\nMode: {mode}")
         logger.info("=" * 60)
         
+        last_loop_time = time.time()
+        consecutive_timeouts = 0
+        
         while not shutdown_event.is_set():
             start_time = time.time()
             
             try:
-                trading_loop()
+                # Use the timeout wrapper
+                trading_loop_with_timeout()
+                consecutive_timeouts = 0  # Reset on success
             except Exception as e:
                 logger.error(f"Trading loop error: {e}")
                 send_telegram(f"Trading loop error: {str(e)[:150]}")
+                consecutive_timeouts += 1
+                
+                # Emergency stop if too many consecutive timeouts
+                if consecutive_timeouts >= 3:
+                    logger.critical("Too many consecutive timeouts - creating emergency stop")
+                    send_telegram("🚨 EMERGENCY: Multiple timeouts detected - stopping bot")
+                    with open(EMERGENCY_STOP_FILE, 'w') as f:
+                        f.write(f"Multiple timeouts at {datetime.now()}")
+                    break
             
-            # Ensure consistent timing
+            # Ensure minimum time between loops
             elapsed = time.time() - start_time
-            sleep_time = max(0, 60 - elapsed)
             
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
+            # Track if we're consistently slow
+            if elapsed > 60:
                 logger.warning(f"Trading loop took {elapsed:.1f}s - longer than 60s interval")
+                
+            # Always wait for next minute mark
+            next_run = last_loop_time + 60
+            current_time = time.time()
+            if current_time < next_run:
+                sleep_time = next_run - current_time
+                time.sleep(sleep_time)
+            
+            last_loop_time = time.time()
             
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")

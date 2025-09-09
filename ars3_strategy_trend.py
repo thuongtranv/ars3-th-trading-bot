@@ -34,21 +34,36 @@ def _atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
     return tr.rolling(window=length, min_periods=1).mean()
 
 def _adx(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """Calculates the ADX indicator with a fix for index alignment."""
     high, low, close = df['high'], df['low'], df['close']
+    
+    # Calculate True Range
+    tr = pd.concat([
+        (high - low),
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/length, adjust=False).mean().replace(0, 1e-9)
+    
+    # Directional Movement
     up = high.diff()
     down = -low.diff()
-    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
-    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
-    tr = pd.concat([(high - low),
-                    (high - close.shift(1)).abs(),
-                    (low - close.shift(1)).abs()], axis=1).max(axis=1)
-    atr = tr.rolling(window=length, min_periods=1).mean().replace(0, 1e-9)
-    plus_di = 100 * pd.Series(plus_dm).rolling(window=length, min_periods=1).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm).rolling(window=length, min_periods=1).mean() / atr
+    plus_dm_raw = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm_raw = np.where((down > up) & (down > 0), down, 0.0)
+    
+    # --- FIX START ---
+    # Convert numpy arrays back to pandas Series WITH THE CORRECT INDEX
+    plus_dm = pd.Series(plus_dm_raw, index=df.index)
+    minus_dm = pd.Series(minus_dm_raw, index=df.index)
+    # --- FIX END ---
+    
+    plus_di = 100 * plus_dm.ewm(alpha=1/length, adjust=False).mean() / atr
+    minus_di = 100 * minus_dm.ewm(alpha=1/length, adjust=False).mean() / atr
+    
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-12)) * 100
-    adx = dx.rolling(window=length, min_periods=1).mean()
-    adx.index = df.index
-    return adx
+    adx = dx.ewm(alpha=1/length, adjust=False).mean()
+    
+    return adx.fillna(0)
 
 def _compute_volume_filter(df: pd.DataFrame, lookback: int = 20) -> pd.Series:
     if 'volume' not in df.columns:

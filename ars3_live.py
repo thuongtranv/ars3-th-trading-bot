@@ -113,7 +113,6 @@ def save_position(pos_data):
             if pos_data and not isinstance(pos_data, dict):
                 logger.error("Invalid position data type")
                 return False
-            
             # Convert datetime objects to strings for JSON serialization
             serializable_data = {}
             for key, value in pos_data.items():
@@ -155,7 +154,6 @@ def load_position():
         if missing_fields:
             logger.warning(f"Position missing required fields: {missing_fields}, clearing position")
             return {}
-        
         # Validate data types
         try:
             pos['size'] = float(pos['size'])
@@ -256,6 +254,29 @@ def get_current_balance():
         except Exception as e:
             logger.error(f"Failed to get balance from broker: {e}, using cached value")
             return current_balance
+        
+def get_current_equity():
+    """Thread-safe equity retrieval (balance + unrealized PNL) with broker fallback."""
+    global current_balance  # Giữ current_balance cho simulation
+    
+    with balance_lock:
+        if SIMULATION_MODE:
+            # In simulation, equity = current_balance (updated by PNL)
+            return current_balance
+        
+        try:
+            if broker is None:
+                logger.warning("Broker not initialized, using cached balance as equity")
+                return current_balance
+            
+            # Use new broker method for accurate equity
+            equity = broker.get_equity(best_coin)  # Pass symbol if needed
+            logger.debug(f"Fetched real equity: {equity}")
+            return equity
+            
+        except Exception as e:
+            logger.error(f"Error fetching equity: {e}, using cached balance")
+            return current_balance  # Fallback
 
 def update_balance_and_pnl(pnl=0.0):
     """Thread-safe balance and P&L tracking with daily reset and limits."""
@@ -590,10 +611,15 @@ def trading_loop():
                             signals = []
                     elif regime == "trending":
                         try:
+                            account_state = {
+                                'balance': balance,
+                                'equity': get_current_equity(),
+                                'daily_loss': MAX_DAILY_LOSS
+                            }
                             signals = generate_trend_signals(
                                 df_base, 
                                 cfg=TREND_STRATEGY_CONFIG, 
-                                balance=balance
+                                account_state=account_state
                             )
                         except Exception as e:
                             logger.error(f"Error generating trend signals: {e}")

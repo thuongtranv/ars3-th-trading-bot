@@ -596,7 +596,44 @@ class Broker:
                 "message": str(e),
                 "exchange": self.exchange_id
             }
-
+        
+    def get_equity(self, symbol: Optional[str] = None) -> float:
+        """Calculate total equity (balance + unrealized PNL) with error handling"""
+        if self.simulation_mode or not self.exchange:
+            logger.info("Using simulation balance as equity")
+            return self.config.get("initial_capital", 10000.0)  # Fallback to config
+        
+        try:
+            self._rate_limit_check()
+            with self.connection_lock:
+                if not self.connected:
+                    self._reconnect()
+                    if not self.connected:
+                        logger.warning("Cannot fetch equity - using fallback")
+                        return 10000.0  # Fallback
+                
+                # Fetch balance (free + used, but focus on total USDT)
+                balance = self.exchange.fetch_balance()
+                usdt_balance = balance.get('USDT', {}).get('total', 0.0) or balance.get('free', {}).get('USDT', 0.0)
+                
+                # Fetch positions and calculate unrealized PNL
+                positions = self.exchange.fetch_positions([symbol] if symbol else None)
+                unrealized_pnl = 0.0
+                for pos in positions:
+                    if pos.get('contracts') > 0:  # Active position
+                        unrealized = pos.get('unrealizedPnl', 0.0)
+                        unrealized_pnl += unrealized
+                        logger.debug(f"Position {pos.get('symbol')}: Unrealized PNL {unrealized}")
+                
+                equity = usdt_balance + unrealized_pnl
+                self.last_heartbeat = time.time()
+                logger.debug(f"Calculated equity: {usdt_balance} (balance) + {unrealized_pnl} (unrealized) = {equity}")
+                return max(equity, 0.0)  # Ensure non-negative
+            
+        except Exception as e:
+            logger.error(f"Error calculating equity: {e}")
+            return 10000.0  # Fallback to default
+    
     def cleanup(self):
         """Cleanup resources"""
         try:

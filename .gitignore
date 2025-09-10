@@ -11,3 +11,6 @@ backtest_trades.csv
 ars3_autostart.log
 ars3_bot.log
 equity_live.csv
+EMERGENCY_STOP
+position.json
+trades_live.csv

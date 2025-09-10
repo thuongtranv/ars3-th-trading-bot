@@ -19,6 +19,7 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
+    encoding='utf-8',
     handlers=[
         logging.FileHandler('ars3_autostart.log'),
         logging.StreamHandler()

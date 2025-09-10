@@ -182,12 +182,12 @@ def generate_signals(
                     tp2 = float(close + risk_dist * cfg['tp2_risk_multiple'])
                     half = size * 0.5
                     signals.append({
-                        'type': 'BUY', 'price': float(close), 'size': half, 'stop': sl, 'tp': tp1,
+                        'type': 'BUY', 'price': float(close), 'size': half, 'stop': sl, 'tp1': tp1,
                         'exit_mode': 'partial_tp1', 'atr': float(row['atr']),
                         'meta': {'reason': 'pullback'}
                     })
                     signals.append({
-                        'type': 'BUY', 'price': float(close), 'size': size - half, 'stop': sl, 'tp': tp2,
+                        'type': 'BUY', 'price': float(close), 'size': size - half, 'stop': sl, 'tp2': tp2,
                         'exit_mode': 'trail_atr', 'atr': float(row['atr']),
                         'meta': {
                             'reason': 'pullback',
@@ -214,12 +214,12 @@ def generate_signals(
                     tp2 = float(close - risk_dist * cfg['tp2_risk_multiple'])
                     half = size * 0.5
                     signals.append({
-                        'type': 'SELL', 'price': float(close), 'size': half, 'stop': sl, 'tp': tp1,
+                        'type': 'SELL', 'price': float(close), 'size': half, 'stop': sl, 'tp1': tp1,
                         'exit_mode': 'partial_tp1', 'atr': float(row['atr']),
                         'meta': {'reason': 'pullback'}
                     })
                     signals.append({
-                        'type': 'SELL', 'price': float(close), 'size': size - half, 'stop': sl, 'tp': tp2,
+                        'type': 'SELL', 'price': float(close), 'size': size - half, 'stop': sl, 'tp2': tp2,
                         'exit_mode': 'trail_atr', 'atr': float(row['atr']),
                         'meta': {
                             'reason': 'pullback',

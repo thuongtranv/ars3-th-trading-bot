@@ -16,7 +16,7 @@ class Broker:
         
         # Load configuration
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 self.config = yaml.safe_load(f)
         except Exception as e:
             logger.warning(f"Error loading config: {e}. Using default config.")

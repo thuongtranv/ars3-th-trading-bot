@@ -23,6 +23,7 @@ from ars3_strategy_utils import MarketRegimeDetector, calculate_regime_indicator
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
+    encoding='utf-8',
     handlers=[
         logging.FileHandler('ars3_bot.log'),
         logging.StreamHandler()
@@ -36,7 +37,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 try:
-    with open("ars3_config.yaml", "r") as f:
+    with open("ars3_config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     
     # Bot settings with validation
@@ -622,15 +623,15 @@ def trading_loop():
                             account_state = {
                                 'balance': balance,
                                 'equity': get_current_equity(),
-                                'daily_loss': MAX_DAILY_LOSS
+                                'daily_loss': daily_pnl # Sửa lại để truyền PNL thực tế
                             }
                             signals = generate_trend_signals(
                                 df_base, 
-                                cfg=TREND_STRATEGY_CONFIG, 
+                                cfg=TREND_STRATEGY_CONFIG,
                                 account_state=account_state
                             )
                         except Exception as e:
-                            logger.error(f"Error generating trend signals: {e}")
+                            logger.error(f"Error generating v2 trend signals: {e}")
                             signals = []
                     elif regime == "compression":
                         logger.info("Market in compression - waiting for breakout")

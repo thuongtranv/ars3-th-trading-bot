@@ -19,12 +19,13 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    encoding='utf-8',
+    # Thêm encoding='utf-8' vào cả FileHandler và StreamHandler
     handlers=[
-        logging.FileHandler('ars3_autostart.log'),
-        logging.StreamHandler()
+        logging.FileHandler('ars3_autostart.log', encoding='utf-8'),
+        logging.StreamHandler() # Console trên Windows có thể vẫn bị, nhưng lỗi file log sẽ hết
     ]
 )
+
 logger = logging.getLogger(__name__)
 
 # Paths
@@ -36,7 +37,7 @@ EMERGENCY_STOP_FILE = os.path.join(BASE_DIR, "EMERGENCY_STOP")
 
 # Load configuration
 try:
-    with open(CONFIG_FILE, "r") as f:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     SIMULATION_MODE = config.get("simulation_mode", True)
 except Exception as e:

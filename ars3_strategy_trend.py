@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "ars3_config.yaml")
 
 def load_strategy_config() -> Dict:
-    with open(CONFIG_PATH, "r") as f:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         cfg_all = yaml.safe_load(f)
     return cfg_all.get("trend_strategy", {})
 

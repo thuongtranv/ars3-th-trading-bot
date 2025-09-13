@@ -14,3 +14,4 @@ equity_live.csv
 EMERGENCY_STOP
 position.json
 trades_live.csv
+.env

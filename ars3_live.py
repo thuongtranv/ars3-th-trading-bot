@@ -753,9 +753,13 @@ def trading_loop():
             # Save data to files periodically
             if len(equity_log) % 10 == 0:  # Every 10 cycles
                 try:
-                    equity_df = pd.DataFrame(list(equity_log))
-                    equity_df.to_csv("equity_live.csv", index=False)
-                    
+                    # Thay vì tạo lại DataFrame, chỉ lấy record cuối cùng
+                    last_equity_record = equity_log[-1]
+                    equity_df_new = pd.DataFrame([last_equity_record])
+                    equity_filepath = "equity_live.csv"
+                    # Ghi nối thêm, không ghi header nếu file đã tồn tại
+                    equity_df_new.to_csv(equity_filepath, mode='a', header=not os.path.exists(equity_filepath), index=False)
+
                     if trades_log:
                         trades_df = pd.DataFrame(list(trades_log))
                         trades_df.to_csv("trades_live.csv", index=False)

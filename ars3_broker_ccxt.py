@@ -50,9 +50,17 @@ class Broker:
     def _initialize_exchange(self):
         """Initialize exchange connection with proper error handling"""
         try:
-            # Get API credentials
-            api_key = os.getenv("BINANCE_API_KEY")
-            api_secret = os.getenv("BINANCE_API_SECRET")
+            # Get API credentials based on exchange
+            if self.exchange_id == "bybit":
+                api_key = os.getenv("BYBIT_API_KEY")
+                api_secret = os.getenv("BYBIT_API_SECRET")
+            elif self.exchange_id == "binance":
+                api_key = os.getenv("BINANCE_API_KEY")
+                api_secret = os.getenv("BINANCE_API_SECRET")
+            else:
+                # Default to binance env vars for backward compatibility
+                api_key = os.getenv("BINANCE_API_KEY")
+                api_secret = os.getenv("BINANCE_API_SECRET")
             
             if not api_key or not api_secret:
                 if not self.simulation_mode:
@@ -71,27 +79,46 @@ class Broker:
                 "secret": api_secret,
                 "enableRateLimit": True,
                 "timeout": 30000,
-                "options": {}
+                "options": {
+                    "recvWindow": 30000
+                }
             }
             
             # Set market type before initialization
             if self.is_futures:
-                exchange_config["options"]["defaultType"] = "future"
+                if self.exchange_id == "bybit":
+                    # Bybit futures configuration
+                    exchange_config["options"]["defaultType"] = "linear"  # USDT perpetual
+                    # exchange_config["options"]["defaultType"] = "inverse"  # For coin-margined
+                elif self.exchange_id == "binance":
+                    exchange_config["options"]["defaultType"] = "future"
             
             # Configure testnet
             if self.testnet:
                 if self.exchange_id == "binance":
                     exchange_config["sandbox"] = True
-                    exchange_config["urls"] = {
-                        'api': {
-                            'public': 'https://testnet.binance.vision/api/v3',
-                            'private': 'https://testnet.binance.vision/api/v3',
+                    if self.is_futures:
+                        exchange_config["urls"] = {
+                            'api': {
+                                'public': 'https://testnet.binancefuture.com/fapi/v1',
+                                'private': 'https://testnet.binancefuture.com/fapi/v1',
+                            }
                         }
-                    }
+                    else:
+                        exchange_config["urls"] = {
+                            'api': {
+                                'public': 'https://testnet.binance.vision/api/v3',
+                                'private': 'https://testnet.binance.vision/api/v3',
+                            }
+                        }
                 elif self.exchange_id == "bybit":
                     exchange_config["sandbox"] = True
+                    # Bybit testnet URLs
                     exchange_config["urls"] = {
-                        'api': 'https://api-testnet.bybit.com'
+                        'api': {
+                            'public': 'https://api-testnet.bybit.com',
+                            'private': 'https://api-testnet.bybit.com',
+                        }
                     }
             
             self.exchange = exchange_class(exchange_config)
@@ -113,6 +140,13 @@ class Broker:
             try:
                 # Load markets
                 self.exchange.load_markets()
+
+                # 🟢 Chỉ gọi fetch_status nếu sàn hỗ trợ
+                if hasattr(self.exchange, "has") and self.exchange.has.get("fetchStatus", False):
+                    try:
+                        self.exchange.fetch_status()
+                    except Exception as e:
+                        logger.warning(f"fetch_status() failed but continuing: {e}")
                 
                 # Test with a simple API call
                 self.exchange.fetch_ticker(self.symbol)
@@ -352,7 +386,11 @@ class Broker:
                     self.exchange.timeout = timeout * 1000
                     
                     try:
-                        balance = self.exchange.fetch_balance()
+                        # === FIX: Bybit needs category param ===
+                        if self.exchange_id == "bybit":
+                            balance = self.exchange.fetch_balance({"category": "linear"})
+                        else:
+                            balance = self.exchange.fetch_balance()
                     finally:
                         self.exchange.timeout = original_timeout
                     
@@ -602,9 +640,19 @@ class Broker:
         try:
             with self.connection_lock:
                 # Test with multiple API calls
-                status = self.exchange.fetch_status()
+                # 🟢 Chỉ gọi fetch_status nếu được hỗ trợ
+                status = None
+                if hasattr(self.exchange, "has") and self.exchange.has.get("fetchStatus", False):
+                    try:
+                        status = self.exchange.fetch_status()
+                    except Exception as e:
+                        logger.warning(f"fetch_status() failed but continuing: {e}")
                 ticker = self.exchange.fetch_ticker(self.symbol)
-                balance = self.exchange.fetch_balance()
+                # === FIX: Bybit needs category param ===
+                if self.exchange_id == "bybit":
+                    balance = self.exchange.fetch_balance({"category": "linear"})
+                else:
+                    balance = self.exchange.fetch_balance()
                 
                 self.connected = True
                 self.last_heartbeat = time.time()
@@ -644,11 +692,19 @@ class Broker:
                         return 10000.0  # Fallback
                 
                 # Fetch balance (free + used, but focus on total USDT)
-                balance = self.exchange.fetch_balance()
+                # === FIX: Bybit needs category param ===
+                if self.exchange_id == "bybit":
+                    balance = self.exchange.fetch_balance({"category": "linear"})
+                else:
+                    balance = self.exchange.fetch_balance()
+
                 usdt_balance = balance.get('USDT', {}).get('total', 0.0) or balance.get('free', {}).get('USDT', 0.0)
                 
                 # Fetch positions and calculate unrealized PNL
-                positions = self.exchange.fetch_positions([symbol] if symbol else None)
+                params = {}
+                if self.exchange_id == "bybit":
+                    params["category"] = "linear"
+                positions = self.exchange.fetch_positions([symbol] if symbol else None, params=params)
                 unrealized_pnl = 0.0
                 for pos in positions:
                     if pos.get('contracts') > 0:  # Active position

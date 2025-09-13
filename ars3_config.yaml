@@ -7,11 +7,11 @@ initial_capital: 10000.0
 risk_per_trade: 0.01  # Risk 1% of capital per trade
 max_dd_percent: 15    # Maximum allowed drawdown before emergency stop
 max_daily_loss: 500   # Maximum daily loss before trading halt
-simulation_mode: true # true = paper trading, false = live trading
+simulation_mode: false   # true = paper trading, false = live trading
 commission_rate: 0.0004  # Exchange commission (0.04% for Binance)
 
 # Exchange settings
-exchange: "binance"
+exchange: "bybit" #bybit, binance
 futures: false  # Set to true for futures trading
 testnet: true   # Use testnet for safety
 
@@ -60,65 +60,87 @@ rs75_strategy:
   trailing_stop: false           # Enable trailing stop after TP1
   break_even_after_tp1: true     # Move SL to break-even after TP1
 
-# Strategy settings for Trend Follower
 trend_strategy:
+  # Basic trend indicators
   fast_ema_period: 12
   slow_ema_period: 26
   macro_ema_period: 200
   adx_period: 14
-  adx_threshold: 22
+  adx_threshold: 25
+  strong_adx_threshold: 35
   atr_period: 14
 
-  # Risk
-  base_risk_pct: 0.01
-  max_risk_pct: 0.03
-  adx_risk_scale_factor: 0.03
+  # Advanced momentum indicators
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  momentum_period: 10
 
-  # TP/SL
-  tp1_risk_multiple: 1.5
-  tp2_risk_multiple: 3.0
-  sl_swing_period: 15
-  sl_atr_buffer_multiplier: 0.5
+  # Volatility indicators
+  bb_period: 20
+  bb_std: 2.0
+  min_bb_width: 0.015
+  max_bb_width: 0.08
+  high_volatility_threshold: 0.06
+  low_volatility_threshold: 0.02
 
-  # HTF filter
+  # Oscillator indicators
+  stoch_k_period: 14
+  stoch_d_period: 3
+  williams_r_period: 14
+
+  # Volume analysis
+  volume_lookback: 20
+  volume_sma_period: 20
+  min_volume_ratio: 1.2
+
+  # Multi-timeframe analysis
   use_htf_filter: true
-  htf_period_multiplier: 4
+  htf_ema_fast_period: 48  # 4x faster EMA for HTF
+  htf_ema_slow_period: 104 # 4x slower EMA for HTF
 
-  # Volatility filter
-  use_volatility_filter: true
-  volatility_min_pct: 0.0015
-  volatility_max_pct: 0.05
+  # Risk management
+  base_risk_pct: 0.01
+  max_risk_pct: 0.025
+  min_position_size: 0.001
+  max_position_notional_pct: 0.08
 
-  # Volume filter
-  use_volume_filter: true
-  volume_spike_multiplier: 3.0
+  # Dynamic stop loss
+  base_sl_atr_multiplier: 1.5
+  high_vol_sl_multiplier: 1.8
+  low_vol_sl_multiplier: 1.2
+  strong_trend_threshold: 0.015
+  strong_trend_sl_multiplier: 1.3
+  sl_swing_lookback: 20
 
-  # Extreme volatility filter
-  extreme_volatility_pct: 0.15
+  # Dynamic take profit
+  base_tp1_risk_multiple: 2.0
+  base_tp2_risk_multiple: 4.0
+  strong_adx_tp_multiplier: 1.2
+  high_vol_tp_multiplier: 1.1
 
-  # Pullback
-  pullback_max_bars_since_cross: 15
+  # Signal quality filtering
+  min_signal_quality: 0.7
 
-  # Trailing
-  trailing_atr_multiplier: 2.0
+  # Pullback entry
+  pullback_max_bars_since_cross: 12
 
   # Dynamic trailing
-  dynamic_trail_rr_threshold: 2.0
-  dynamic_trail_multiplier_tight: 1.5
-  dynamic_trail_multiplier_wide: 3.0
+  dynamic_trail_rr_threshold: 2.5
+  dynamic_trail_multiplier_tight: 1.2
+  dynamic_trail_multiplier_wide: 2.5
 
   # Session filter
   trade_start_hour_utc: null
   trade_end_hour_utc: null
 
-  # Position sizing caps
-  max_position_notional_pct: 0.1
-
   # Cooldown
-  cooldown_bars: 3
+  cooldown_bars: 4
 
   # Safety
-  max_daily_loss_pct: 0.05
+  max_daily_loss_pct: 0.04
+  extreme_volatility_pct: 0.12
 
 # Market Regime Detection (Professional Grade)
 regime_detection:

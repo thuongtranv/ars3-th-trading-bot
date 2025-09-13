@@ -240,7 +240,7 @@ if auto_refresh:
     st.rerun()
 
 # Enhanced data loading with validation and caching
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=55, show_spinner=False)
 def load_comprehensive_data():
     """Load all data sources with enhanced error handling and validation."""
     data = {

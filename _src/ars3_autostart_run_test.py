@@ -10,17 +10,21 @@ BOT_SCRIPT_NAMES = ["ars3_live.py", "ars3_streamlit.py", "ars3_autostart.py"]
 
 # Danh sách các file log và dữ liệu cần xóa trước mỗi lần chạy
 FILES_TO_CLEAN = [
-    "ars3_bot.log",
-    "ars3_autostart.log",
-    "trades_live.csv",
-    "equity_live.csv",
+    "..\\logs\\ars3_bot.log",
+    "..\\logs\\ars3_autostart.log",
+    "..\\trading\\trades_live.csv",
+    "..\\trading\\equity_live.csv",
     "position.json",
+    "..\\__pycache__\\ars3_broker_ccxt.cpython-313.pyc",
+    "..\\__pycache__\\ars3_strategy_rs75.cpython-313.pyc",
+    "..\\__pycache__\\ars3_strategy_trend.cpython-313.pyc",
+    "..\\__pycache__\\ars3_strategy_utils.cpython-313.pyc",
     # Thêm file .log của các thư viện nếu có, ví dụ:
     # "werkzeug.log" 
 ]
 
 # File để khởi chạy lại
-AUTOSTART_SCRIPT = "ars3_autostart.py"
+AUTOSTART_SCRIPT = "ars3_live.py"
 
 # --- THIẾT LẬP LOGGING ---
 logging.basicConfig(

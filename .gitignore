@@ -15,3 +15,9 @@ EMERGENCY_STOP
 position.json
 trades_live.csv
 .env
+_src/__pycache__/ars3_broker_ccxt.cpython-313.pyc
+_src/__pycache__/ars3_strategy_rs75.cpython-313.pyc
+_src/__pycache__/ars3_strategy_trend.cpython-313.pyc
+_src/__pycache__/ars3_strategy_utils.cpython-313.pyc
+.env
+.env

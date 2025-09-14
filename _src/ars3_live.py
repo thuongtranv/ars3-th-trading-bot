@@ -25,7 +25,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     encoding='utf-8',
     handlers=[
-        logging.FileHandler('ars3_bot.log'),
+        logging.FileHandler('..\\logs\\ars3_bot.log'),
         logging.StreamHandler()
     ]
 )
@@ -756,13 +756,14 @@ def trading_loop():
                     # Thay vì tạo lại DataFrame, chỉ lấy record cuối cùng
                     last_equity_record = equity_log[-1]
                     equity_df_new = pd.DataFrame([last_equity_record])
-                    equity_filepath = "equity_live.csv"
+                    equity_filepath = "..\\trading\\equity_live.csv"
                     # Ghi nối thêm, không ghi header nếu file đã tồn tại
                     equity_df_new.to_csv(equity_filepath, mode='a', header=not os.path.exists(equity_filepath), index=False)
-
+                    # equity_df = pd.DataFrame(list(equity_log))
+                    # equity_df.to_csv(".\trading\equity_live.csv", index=False)
                     if trades_log:
                         trades_df = pd.DataFrame(list(trades_log))
-                        trades_df.to_csv("trades_live.csv", index=False)
+                        trades_df.to_csv("..\\trading\\trades_live.csv", index=False)
                         
                     logger.debug("Data files updated")
                 except Exception as e:

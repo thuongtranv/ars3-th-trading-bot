@@ -161,7 +161,7 @@ with col1:
     st.title("ARS-3 Multi-Strategy Trading Dashboard")
 with col2:
     # Bot status indicator
-    if os.path.exists("ars3_bot.log"):
+    if os.path.exists("..\\logs\\ars3_bot.log"):
         st.markdown('<div class="status-card status-success">🟢 Bot Active</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="status-card status-error">🔴 Bot Offline</div>', unsafe_allow_html=True)
@@ -264,7 +264,7 @@ def load_comprehensive_data():
     
     # Load trades data
     try:
-        trades_file = "trades_live.csv"
+        trades_file = "..\\trading\\trades_live.csv"
         if os.path.exists(trades_file) and os.path.getsize(trades_file) > 0:
             df = pd.read_csv(trades_file)
             if not df.empty and 'timestamp' in df.columns:
@@ -277,7 +277,7 @@ def load_comprehensive_data():
     
     # Load equity data
     try:
-        equity_file = "equity_live.csv"
+        equity_file = "..\\trading\\equity_live.csv"
         if os.path.exists(equity_file) and os.path.getsize(equity_file) > 0:
             df = pd.read_csv(equity_file)
             if not df.empty and 'timestamp' in df.columns:
@@ -301,7 +301,7 @@ def load_comprehensive_data():
     
     # Load system logs
     try:
-        log_file = "ars3_bot.log"
+        log_file = "..\\log\\ars3_bot.log"
         if os.path.exists(log_file):
             with open(log_file, 'r') as f:
                 lines = f.readlines()
@@ -311,8 +311,8 @@ def load_comprehensive_data():
     
     # File status check
     files_to_check = [
-        "trades_live.csv", "equity_live.csv", "position.json", 
-        "ars3_bot.log", "ars3_config.yaml", "EMERGENCY_STOP"
+        "..\\trading\\trades_live.csv", "..\\trading\\equity_live.csv", "position.json", 
+        "..\\log\\ars3_bot.log", "ars3_config.yaml", "EMERGENCY_STOP"
     ]
     
     for filename in files_to_check:
@@ -479,8 +479,8 @@ st.subheader("🔍 System Status Overview")
 status_cols = st.columns(6)
 
 with status_cols[0]:
-    if files_status.get('trades_live.csv', {}).get('exists', False):
-        age = files_status['trades_live.csv'].get('age_seconds', 0)
+    if files_status.get('..\\trading\\trades_live.csv', {}).get('exists', False):
+        age = files_status['..\\trading\\trades_live.csv'].get('age_seconds', 0)
         if age < 300:  # 5 minutes
             st.markdown('<div class="status-card status-success">📊 Trades: Fresh</div>', unsafe_allow_html=True)
         else:
@@ -489,7 +489,7 @@ with status_cols[0]:
         st.markdown('<div class="status-card status-error">📊 Trades: Missing</div>', unsafe_allow_html=True)
 
 with status_cols[1]:
-    if files_status.get('equity_live.csv', {}).get('exists', False):
+    if files_status.get('..\\trading\\equity_live.csv', {}).get('exists', False):
         st.markdown('<div class="status-card status-success">💰 Equity: OK</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="status-card status-error">💰 Equity: Missing</div>', unsafe_allow_html=True)
@@ -503,8 +503,8 @@ with status_cols[2]:
         st.markdown('<div class="status-card status-info">📍 Position: None</div>', unsafe_allow_html=True)
 
 with status_cols[3]:
-    if files_status.get('ars3_bot.log', {}).get('exists', False):
-        age = files_status['ars3_bot.log'].get('age_seconds', 0)
+    if files_status.get('..\\log\\ars3_bot.log', {}).get('exists', False):
+        age = files_status['..\\log\\ars3_bot.log'].get('age_seconds', 0)
         if age < 120:  # 2 minutes
             st.markdown('<div class="status-card status-success">📝 Logs: Active</div>', unsafe_allow_html=True)
         else:
@@ -1228,8 +1228,8 @@ with footer_cols[1]:
 
 with footer_cols[2]:
     # Show bot uptime if log file exists
-    if files_status.get('ars3_bot.log', {}).get('exists', False):
-        log_age = files_status['ars3_bot.log'].get('age_seconds', 0)
+    if files_status.get('..\\log\\ars3_bot.log', {}).get('exists', False):
+        log_age = files_status['..\\log\\ars3_bot.log'].get('age_seconds', 0)
         uptime_hours = log_age / 3600
         st.caption(f"Bot uptime: ~{uptime_hours:.1f} hours")
 

@@ -155,7 +155,7 @@ class Broker:
                 self.last_heartbeat = time.time()
                 
                 mode = "TESTNET" if self.testnet else "LIVE"
-                logger.info(f"✅ Exchange connected: {self.exchange_id} ({mode})")
+                logger.info(f"Exchange connected: {self.exchange_id} ({mode})")
                 return True
                 
             except ccxt.NetworkError as e:

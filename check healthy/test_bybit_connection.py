@@ -3,7 +3,8 @@ import ccxt
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+dotenv_path = os.path.join(os.path.dirname(__file__), "..", "_src", ".env")
+load_dotenv(dotenv_path=dotenv_path)
 
 api_key = os.getenv("BYBIT_API_KEY")
 api_secret = os.getenv("BYBIT_API_SECRET")
@@ -30,7 +31,7 @@ try:
     balance = exchange.fetch_balance()
     print("✅ Connected! Balance:", balance.get('USDT', {}))
     
-    ticker = exchange.fetch_ticker('BTC/USDT')
+    ticker = exchange.fetch_ticker('BNB/USDT')
     print(f"BTC Price: {ticker['last']}")
     
 except Exception as e:

@@ -1,8 +1,3 @@
-"""
-ars3_strategy_rs75.py (v3.0 - COMPLETELY REWRITTEN AND FIXED)
-Professional Range-Scalper strategy with proper indicator calculations,
-comprehensive error handling, and enhanced signal generation.
-"""
 from typing import List, Dict, Optional
 import numpy as np
 import pandas as pd
@@ -19,18 +14,18 @@ DEFAULT_CFG = {
     "atr_period": 14,
     "rsi_oversold": 30, 
     "rsi_overbought": 70, 
-    "adx_max": 22, 
-    "natr_max": 0.0045,
+    "adx_max": 20, 
+    "natr_max": 0.018,
     "min_bb_width_pct": 0.02,
     "use_confirmation_entry": True, 
     "use_smart_sl": True, 
     "swing_period": 12,
     "use_smart_tp": True, 
-    "use_volume_filter": True, 
+    "use_volume_filter": False, 
     "volume_ma_period": 20,
     "use_htf_filter": True, 
     "htf_ma_period": 50, 
-    "risk_pct": 0.01,
+    "risk_pct": 0.02,
     "max_risk_per_signal": 0.02,
     "min_reward_risk_ratio": 1.5,
     "tp1_risk_multiple": 1.5,

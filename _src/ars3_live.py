@@ -1315,7 +1315,7 @@ if __name__ == "__main__":
         last_loop_time = time.time()
         consecutive_errors = 0
         coin_selection_counter = 0  # Đếm chu kỳ để re-select coin
-        COIN_RESELECTION_INTERVAL = 5  # Re-select mỗi 12 chu kỳ (12 phút nếu 1m timeframe)
+        COIN_RESELECTION_INTERVAL = 8  # Re-select mỗi 12 chu kỳ (12 phút nếu 1m timeframe)
         
         while not shutdown_event.is_set():
             start_time = time.time()

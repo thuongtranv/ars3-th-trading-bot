@@ -1,0 +1,279 @@
+# ARS-3 Trading Bot Configuration (Enhanced Version with Regime Detection)
+# Main bot settings
+coins: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT"]
+timeframe: "1h"
+htf_timeframe: "4h"  # Higher timeframe for trend filtering
+initial_capital: 10000.0
+risk_per_trade: 0.01  # Risk 1% of capital per trade
+max_dd_percent: 15    # Maximum allowed drawdown before emergency stop
+max_daily_loss: 250   # Maximum daily loss before trading halt
+simulation_mode: false   # true = paper trading, false = live trading
+commission_rate: 0.0004  # Exchange commission (0.04% for Binance)
+
+# Exchange settings
+exchange: "bybit" # bybit, binance
+futures: false  # Set to true for futures trading
+testnet: true   # Use testnet for safety
+
+# Risk Management Settings
+risk_management:
+  max_position_size_pct: 0.1      # Max 10% of capital per position
+  max_positions: 3                # Maximum concurrent positions
+  emergency_stop_loss_pct: 0.05   # Emergency stop at 5% account loss
+  position_timeout_hours: 72      # Force close positions after 72 hours
+  max_slippage_pct: 0.02         # Cancel orders if slippage > 2%
+
+# Strategy settings for RS-75 (Range Scalper)
+rs75_strategy:
+  # Technical indicators
+  bb_period: 20
+  bb_std: 2.5
+  rsi_period: 7
+  adx_period: 14
+  atr_period: 14
+  
+  # Signal thresholds
+  rsi_oversold: 30 # 30 change
+  rsi_overbought: 70 # 70 change
+  adx_max: 20               # ADX max for ranging market detection 22 -> 30
+  natr_max: 0.018         # Normalized ATR max (volatility filter) 0.0045 -> 0.008
+  min_bb_width_pct: 0.015   # Minimum BB width as % of price 0.02 -> 0.015
+  
+  # Entry confirmation
+  use_confirmation_entry: true     # Wait for candle close inside BB true changes
+  use_smart_sl: true             # SL based on swing highs/lows
+  swing_period: 12               # Bars to look back for swing levels
+  use_smart_tp: true             # TP1 at BB midline
+  use_volume_filter: false        # Require above-average volume
+  volume_ma_period: 20
+  use_htf_filter: false           # Filter by higher timeframe trend
+  htf_ma_period: 50
+  
+  # Position sizing and risk
+  risk_pct: 0.02                 # Risk per trade as % of capital 0.01 -> 0.02
+  max_risk_per_signal: 0.02      # Never risk more than 2% per signal
+  min_reward_risk_ratio: 1.5     # Minimum R:R ratio
+  
+  # Exit rules
+  tp1_risk_multiple: 1.5         # TP1 at 1.5x risk distance
+  tp2_risk_multiple: 3.0         # TP2 at 3x risk distance
+  trailing_stop: false           # Enable trailing stop after TP1
+  break_even_after_tp1: true     # Move SL to break-even after TP1
+
+trend_strategy:
+  # Basic trend indicators
+  fast_ema_period: 12
+  slow_ema_period: 26
+  macro_ema_period: 200
+  adx_period: 14
+  adx_threshold: 22 #25 -> 18
+  strong_adx_threshold: 35
+  atr_period: 14
+
+  # Advanced momentum indicators
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  momentum_period: 10
+
+  # Volatility indicators
+  bb_period: 20
+  bb_std: 2.0
+  min_bb_width: 0.03 # Từ 0.015 -> 0.01
+  max_bb_width: 0.12 # Từ 0.08 -> 0.12
+  high_volatility_threshold: 0.06
+  low_volatility_threshold: 0.02
+
+  # Oscillator indicators
+  stoch_k_period: 14
+  stoch_d_period: 3
+  williams_r_period: 14
+
+  # Volume analysis
+  volume_lookback: 20
+  volume_sma_period: 20
+  min_volume_ratio: 1.2
+
+  # Multi-timeframe analysis
+  use_htf_filter: false
+  htf_ema_fast_period: 48  # 4x faster EMA for HTF
+  htf_ema_slow_period: 104 # 4x slower EMA for HTF
+
+  # Risk management
+  base_risk_pct: 0.015 # Từ 0.01 -> 0.015
+  max_risk_pct: 0.025  # Từ 0.02 -> 0.025
+  min_position_size: 0.001
+  max_position_notional_pct: 0.08
+
+  # Dynamic stop loss
+  base_sl_atr_multiplier: 1.5
+  high_vol_sl_multiplier: 1.8
+  low_vol_sl_multiplier: 1.2
+  strong_trend_threshold: 0.015
+  strong_trend_sl_multiplier: 1.3
+  sl_swing_lookback: 20
+
+  # Dynamic take profit
+  base_tp1_risk_multiple: 2.0
+  base_tp2_risk_multiple: 4.0
+  strong_adx_tp_multiplier: 1.2
+  high_vol_tp_multiplier: 1.1
+
+  # Signal quality filtering
+  min_signal_quality: 0.60 #0.7 -> 0.4
+
+  # Pullback entry
+  pullback_max_bars_since_cross: 12
+
+  # Dynamic trailing
+  dynamic_trail_rr_threshold: 2.5
+  dynamic_trail_multiplier_tight: 1.2
+  dynamic_trail_multiplier_wide: 2.5
+
+  # Session filter
+  trade_start_hour_utc: null
+  trade_end_hour_utc: null
+
+  # Cooldown
+  cooldown_bars: 4
+
+  # Safety
+  max_daily_loss_pct: 0.04
+  extreme_volatility_pct: 0.12
+
+# Market Regime Detection (Professional Grade)
+regime_detection:
+  # Minimum data requirements
+  min_data_points: 200       # Minimum bars required for analysis
+  
+  # Indicator periods
+  adx_period: 14            # ADX period for trend strength
+  atr_period: 14            # ATR period for volatility
+  slope_ema_period: 200     # Long EMA for slope calculation
+  slope_period: 50          # Lookback period for slope
+  bb_period: 20             # Bollinger Band period
+  vol_period: 50            # Volume analysis period
+  
+  # Thresholds for component scoring (0-1 scale)
+  adx_low: 18               # ADX below this = ranging 18 -> 15
+  adx_high: 28              # ADX above this = trending 25 -> 30
+  natr_low: 0.004           # nATR below this = low volatility (0.3%) 0.003 -> 0.002
+  natr_high: 0.012          # nATR above this = high volatility (0.6%) 0.006 -> 0.008
+  slope_abs_low: 0.00005    # Absolute slope below this = sideways
+  slope_abs_high: 0.00015   # Absolute slope above this = strong trend
+  
+  # Regime decision thresholds (with hysteresis to prevent flip-flopping)
+  trend_on: 0.55            # Trend score threshold to ENTER trending mode 0.60 change
+  trend_off: 0.45           # Trend score threshold to EXIT trending mode 0.45 change
+  range_on: 0.6            # Range score threshold to ENTER ranging mode 0.60 change
+  range_off: 0.45           # Range score threshold to EXIT ranging mode 0.45 change
+  
+  # Compression detection (low volatility + tight price action)
+  bb_width_low: 0.02       # BB width below 1.5% indicates compression 0.015 -> 0.01
+  
+  # Stability controls
+  cooldown_bars: 3          # Wait N bars before allowing regime change
+  
+  # Score weights (must sum to 1.0 for each regime)
+  trend_weights:
+    adx: 0.5                # ADX strength weight
+    natr: 0.2               # Volatility weight  
+    slope: 0.2              # Directional slope weight
+    volume: 0.1             # Volume confirmation weight
+    
+  range_weights:
+    adx: 0.5                # Low ADX weight (inverted)
+    natr: 0.3               # Low volatility weight (inverted)
+    slope: 0.2              # Flat slope weight (inverted)
+
+# Notification settings
+notifications:
+  telegram:
+    enabled: true
+    send_entries: true
+    send_exits: true
+    send_regime_changes: true    # NEW: Alert on regime changes
+    send_daily_summary: true
+    send_errors: true
+  
+  email:
+    enabled: false
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    daily_report_time: "18:00"  # UTC time
+
+# Logging and monitoring
+logging:
+  level: "INFO"              # DEBUG, INFO, WARNING, ERROR
+  max_log_file_size_mb: 50   # Rotate logs at 50MB
+  keep_log_files: 10         # Keep last 10 log files
+  log_trades: true
+  log_signals: true
+  log_regime_changes: true   # NEW: Log regime transitions
+  log_errors: true
+
+# Data management
+data_management:
+  max_equity_records: 10000   # Keep last 10k equity records
+  max_trade_records: 5000     # Keep last 5k trade records
+  backup_frequency_hours: 24   # Backup data every 24 hours
+  data_retention_days: 30      # Keep data for 30 days
+
+# Performance monitoring
+performance:
+  calculate_metrics_interval: 300  # Calculate metrics every 5 minutes
+  equity_snapshot_interval: 60     # Save equity every minute
+  health_check_interval: 30        # System health check every 30 seconds
+  
+  # Alert thresholds
+  max_drawdown_alert: 10          # Alert if drawdown > 10%
+  consecutive_losses_alert: 5      # Alert after 5 consecutive losses
+  low_balance_alert_pct: 20       # Alert if balance drops 20% from peak
+  regime_instability_alert: 10    # Alert if regime changes > N times per day
+
+# Connection and reliability
+connection:
+  heartbeat_interval: 60          # Ping exchange every 60 seconds
+  connection_timeout: 30          # Connection timeout in seconds
+  max_reconnect_attempts: 5       # Max reconnection attempts
+  reconnect_delay: 10            # Delay between reconnect attempts
+  rate_limit_buffer: 0.1         # Stay 10% below rate limits
+
+# Backtesting settings
+backtest:
+  commission_rate: 0.0004        # Same as live trading
+  slippage_pct: 0.01            # 1% average slippage
+  realistic_execution: true      # Use realistic fill prices
+  position_timeout_bars: 200     # Force close after 200 bars
+  include_regime_analysis: true  # NEW: Include regime stats in backtest
+  
+  # Monte Carlo settings
+  monte_carlo_runs: 1000         # Number of MC simulations
+  bootstrap_trades: true         # Bootstrap historical trades
+  confidence_levels: [95, 99]   # Confidence intervals to calculate
+
+# Emergency controls
+emergency:
+  kill_switch_file: "EMERGENCY_STOP"     # File to trigger emergency stop
+  max_daily_trades: 20                    # Maximum trades per day
+  circuit_breaker_loss_pct: 0.1          # Stop trading at 10% loss
+  force_flatten_on_shutdown: true        # Close all positions on shutdown
+  emergency_contact_telegram: true       # Send emergency notifications
+  max_regime_changes_per_day: 15         # Emergency stop if too many regime changes
+
+# Advanced features
+advanced:
+  multi_timeframe_analysis: true         # Use multiple timeframes
+  correlation_filter: true               # Avoid correlated positions
+  market_session_filter: false           # Trade only during market hours
+  news_sentiment_filter: false           # Filter trades based on news (requires API)
+  regime_based_position_sizing: true     # NEW: Adjust size based on regime confidence
+  
+  # Machine learning (future expansion)
+  ml_enhanced_signals: false             # Use ML for signal enhancement
+  adaptive_parameters: false             # Dynamically adjust parameters
+  
+  # Portfolio management
+  portfolio_rebalancing: false           # Rebalance portfolio periodically
+  dynamic_position_sizing: false         # Adjust sizing based on performance

@@ -80,7 +80,7 @@ class Broker:
                 "enableRateLimit": True,
                 "timeout": 30000,
                 "options": {
-                    "recvWindow": 30000
+                    "recvWindow": 60000
                 }
             }
             

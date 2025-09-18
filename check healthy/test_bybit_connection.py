@@ -16,7 +16,7 @@ exchange = ccxt.bybit({
     'apiKey': api_key,
     'secret': api_secret,
     'options': {
-        'recvWindow': 30000,  # 30 giây
+        'recvWindow': 60000,  # 30 giây
     }
 })
 

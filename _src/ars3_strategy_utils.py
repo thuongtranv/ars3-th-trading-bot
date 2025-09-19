@@ -150,8 +150,8 @@ class MarketRegimeDetector:
         else:
             trend_score, range_score = self._calculate_scores(indicators)
             
-            trend_on, trend_off = self.cfg.get("trend_on", 0.6), self.cfg.get("trend_off", 0.45)
-            range_on, range_off = self.cfg.get("range_on", 0.6), self.cfg.get("range_off", 0.45)
+            trend_on, trend_off = self.cfg.get("trend_on", 0.35), self.cfg.get("trend_off", 0.45)
+            range_on, range_off = self.cfg.get("range_on", 0.35), self.cfg.get("range_off", 0.45)
 
             if self.current_regime == "trending":
                 if trend_score < trend_off and range_score > range_on:

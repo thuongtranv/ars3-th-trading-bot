@@ -172,6 +172,9 @@ def _calculate_position_size(entry_price: float, stop_loss: float, balance: floa
     base_size = risk_amount / risk_distance
     max_size = (balance * cfg['max_position_notional_pct']) / entry_price
     final_size = min(base_size, max_size)
+    min_size = 0.001
+    if final_size < min_size:
+        return 0.0
     return final_size if final_size >= cfg.get('min_position_size', 0.0) else 0.0
 
 def _calculate_signal_quality(df: pd.DataFrame, idx: int, side: str, cfg: Dict) -> float:

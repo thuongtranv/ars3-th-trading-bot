@@ -479,12 +479,28 @@ class Broker:
                         if not self.connected:
                             logger.error("Cannot execute order - exchange not connected")
                             return None
+                    # Định dạng lại amount theo đúng precision của sàn
+                    formatted_amount = self.exchange.amount_to_precision(symbol, amount)
+
+                    # Nếu là limit order, định dạng cả price
+                    formatted_price = None
+                    if order_type == 'limit' and price is not None:
+                        formatted_price = self.exchange.price_to_precision(symbol, price)
+
+                    logger.info(f"Formatted order: {side.upper()} {formatted_amount} {symbol}")
                     
+                    params = {}
+                    if self.exchange.id == 'bybit':
+                        if self.is_futures:
+                            params['category'] = 'linear'  # USDT perpetual
+                        else:
+                            params['category'] = 'spot'
+
                     # Execute order
                     if order_type == 'market':
-                        order = self.exchange.create_market_order(symbol, side, amount)
+                        order = self.exchange.create_market_order(symbol, side, float(formatted_amount), params=params)
                     elif order_type == 'limit':
-                        order = self.exchange.create_limit_order(symbol, side, amount, price)
+                        order = self.exchange.create_limit_order(symbol, side, float(formatted_amount), float(formatted_price), params=params)
                     else:
                         logger.error(f"Unsupported order type: {order_type}")
                         return None
@@ -514,6 +530,7 @@ class Broker:
                 
             except Exception as e:
                 logger.error(f"Unexpected error during order execution: {e}")
+                logger.error(f"Error formatting or executing order: {e}")
         
         return None
 

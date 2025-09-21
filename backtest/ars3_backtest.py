@@ -1,9 +1,3 @@
-"""
-ars3_backtest.py (v4.1 - Complete Fixed Version)
-Professional-grade backtest engine with regime-aware strategy selection,
-realistic slippage, commission handling, and comprehensive analytics.
-"""
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,13 +9,13 @@ from typing import Dict, List, Tuple, Optional
 import json
 import os
 import gc
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(_src), '..')))
 
-# Import strategy modules
 try:
-    from ars3_strategy_rs75 import generate_signals as generate_range_signals
-    from ars3_strategy_trend import generate_signals as generate_trend_signals
-    from ars3_strategy_utils import MarketRegimeDetector, calculate_regime_indicators
-    from ars3_broker_ccxt import Broker
+    from _src.ars3_strategy_rs75 import generate_signals as generate_range_signals
+    from _src.ars3_strategy_trend import generate_signals as generate_trend_signals
+    from _src.ars3_strategy_utils import MarketRegimeDetector, calculate_regime_indicators
+    from _src.ars3_broker_ccxt import Broker
 except ImportError as e:
     logging.error(f"Failed to import required modules: {e}")
     exit(1)

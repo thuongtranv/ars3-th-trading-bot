@@ -25,6 +25,9 @@ ARS-3/
 ├── ars3_report_daily.py            # Daily report generator: Sends PNL, drawdown, charts via Telegram/email
 ├── streamlit_ars3_advanced.py      # Streamlit dashboard: Real-time equity curve and trade history
 ├── ars3_config.yaml                # Configuration: Coins, timeframe, risk, strategy params, modes
+├── common/                         # Shared helpers: env loading, retry/backoff, logging, Telegram
+├── ars3_alert/                     # Early-warning alert bot (alerts only), see ars3_alert/README.md
+├── tests/                          # pytest suite: `python -m pytest`
 ├── .env                            # Environment variables: API keys, Telegram token, email creds
 ├── trades_live.csv                 # Auto-generated: Log of executed trades
 ├── equity_live.csv                 # Auto-generated: Equity history log

@@ -1,20 +1,17 @@
 import ccxt
-import os
-from dotenv import load_dotenv
-import yaml
 import time
 import random
 import logging
+
+from common.env import get_env, load_yaml
+from common.retry import retry
 
 logger = logging.getLogger(__name__)
 
 class Broker:
     def __init__(self, config_path="ars3_config.yaml"):
-        load_dotenv()
-        
         try:
-            with open(config_path, "r") as f:
-                self.config = yaml.safe_load(f)
+            self.config = load_yaml(config_path)
         except Exception as e:
             logger.warning(f"Error loading config: {e}. Using default config.")
             self.config = {}
@@ -31,8 +28,8 @@ class Broker:
         self.exchange = None
         try:
             # Get API credentials
-            api_key = os.getenv("BINANCE_API_KEY")
-            api_secret = os.getenv("BINANCE_API_SECRET")
+            api_key = get_env("BINANCE_API_KEY")
+            api_secret = get_env("BINANCE_SECRET_KEY", "BINANCE_API_SECRET")
             
             if not api_key or not api_secret:
                 if not self.simulation_mode:
@@ -64,81 +61,50 @@ class Broker:
                     else:
                         logger.warning("Testnet requested but not supported. Using live mode!")
                 
-                # FIXED: Test connection with retry logic
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        self.exchange.load_markets()
-                        # Test a simple API call
-                        self.exchange.fetch_ticker(self.symbol)
-                        logger.info(f"✅ Exchange connected: {exchange_id} ({'TESTNET' if self.testnet else 'LIVE'})")
-                        break
-                    except Exception as e:
-                        logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
-                        if attempt == max_retries - 1:
-                            raise e
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                        
+                self._connect()
+                logger.info(f"✅ Exchange connected: {exchange_id} ({'TESTNET' if self.testnet else 'LIVE'})")
+
         except Exception as e:
             logger.error(f"❌ Exchange connection failed: {e}")
             logger.info("🔄 Falling back to SIMULATION MODE")
             self.simulation_mode = True
             self.exchange = None
 
-    def fetch_ohlcv(self, limit=200):
-        """Fetch OHLCV data with comprehensive error handling."""
-        if self.simulation_mode or not self.exchange:
-            return self._generate_simulation_data(limit)
-        
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # FIXED: Add data validation
-                data = self.exchange.fetch_ohlcv(self.symbol, timeframe=self.timeframe, limit=limit)
-                
-                if not data:
-                    logger.warning("Empty OHLCV data received")
-                    return []
-                
-                # Validate data structure
-                for i, candle in enumerate(data):
-                    if len(candle) != 6:
-                        logger.warning(f"Invalid candle format at index {i}: {candle}")
-                        continue
-                    
-                    timestamp, open_p, high, low, close, volume = candle
-                    
-                    # Basic validation
-                    if any(x is None or (isinstance(x, (int, float)) and x <= 0) for x in [open_p, high, low, close]):
-                        logger.warning(f"Invalid price data at index {i}: {candle}")
-                        continue
-                    
-                    if high < low or high < max(open_p, close) or low > min(open_p, close):
-                        logger.warning(f"Inconsistent OHLC data at index {i}: {candle}")
-                        continue
-                
-                logger.info(f"Fetched {len(data)} candles for {self.symbol}")
-                return data
-                
-            except ccxt.NetworkError as e:
-                logger.warning(f"Network error on attempt {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                logger.error("Max retries exceeded for network errors")
-                return []
-                
-            except ccxt.ExchangeError as e:
-                logger.error(f"Exchange error: {e}")
-                return []
-                
-            except Exception as e:
-                logger.error(f"Unexpected error fetching OHLCV: {e}")
-                return []
-        
-        return []
+    @retry(times=3, on=(ccxt.NetworkError,))
+    def _connect(self):
+        self.exchange.load_markets()
+        self.exchange.fetch_ticker(self.symbol)
 
-    def _generate_simulation_data(self, limit):
+    @retry(times=3, on=(ccxt.NetworkError,))
+    def _fetch_ohlcv_raw(self, symbol, limit):
+        return self.exchange.fetch_ohlcv(symbol, timeframe=self.timeframe, limit=limit)
+
+    @staticmethod
+    def _is_valid_candle(candle):
+        if len(candle) != 6 or any(x is None or x <= 0 for x in candle[1:5]):
+            return False
+        _, o, h, l, c, _ = candle
+        return h >= max(o, c) and l <= min(o, c)
+
+    def fetch_ohlcv(self, limit=200, symbol=None):
+        """Fetch OHLCV for `symbol` (default: self.symbol); invalid candles are dropped."""
+        symbol = symbol or self.symbol
+        if self.simulation_mode or not self.exchange:
+            return self._generate_simulation_data(limit, symbol)
+
+        try:
+            data = self._fetch_ohlcv_raw(symbol, limit)
+        except Exception as e:
+            logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+            return []
+
+        valid = [c for c in data or [] if self._is_valid_candle(c)]
+        if len(valid) < len(data or []):
+            logger.warning(f"{symbol}: dropped {len(data) - len(valid)} invalid candles")
+        logger.info(f"Fetched {len(valid)} candles for {symbol}")
+        return valid
+
+    def _generate_simulation_data(self, limit, symbol):
         """Generate realistic simulation data."""
         try:
             data = []
@@ -155,9 +121,9 @@ class Broker:
             }.get(self.timeframe, 60 * 60 * 1000)  # Default to 1h
             
             # Starting price based on symbol
-            if 'BTC' in self.symbol:
+            if 'BTC' in symbol:
                 price = 45000 + random.uniform(-5000, 5000)
-            elif 'ETH' in self.symbol:
+            elif 'ETH' in symbol:
                 price = 2500 + random.uniform(-500, 500)
             else:
                 price = 100 + random.uniform(-20, 20)
@@ -188,7 +154,7 @@ class Broker:
                 data.append([timestamp, open_p, high_p, low_p, close_p, volume])
                 price = new_price
             
-            logger.info(f"Generated {len(data)} simulation candles for {self.symbol}")
+            logger.info(f"Generated {len(data)} simulation candles for {symbol}")
             return data
             
         except Exception as e:
@@ -204,31 +170,18 @@ class Broker:
                 "total": {"USDT": capital},
                 "used": {"USDT": 0}
             }
-        
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                balance = self.exchange.fetch_balance()
-                logger.info("Successfully fetched account balance")
-                return balance
-                
-            except ccxt.NetworkError as e:
-                logger.warning(f"Network error fetching balance (attempt {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                    
-            except ccxt.ExchangeError as e:
-                logger.error(f"Exchange error fetching balance: {e}")
-                break
-                
-            except Exception as e:
-                logger.error(f"Unexpected error fetching balance: {e}")
-                break
-        
-        # Return default balance on error
-        logger.warning("Using default balance due to API errors")
-        return {"free": {"USDT": 0}, "total": {"USDT": 0}, "used": {"USDT": 0}}
+
+        try:
+            balance = self._fetch_balance_raw()
+            logger.info("Successfully fetched account balance")
+            return balance
+        except Exception as e:
+            logger.error(f"Failed to fetch balance: {e}")
+            return {"free": {"USDT": 0}, "total": {"USDT": 0}, "used": {"USDT": 0}}
+
+    @retry(times=3, on=(ccxt.NetworkError,))
+    def _fetch_balance_raw(self):
+        return self.exchange.fetch_balance()
 
     def execute_order(self, symbol, side, amount, order_type='market', price=None):
         """Execute order with comprehensive error handling and validation."""

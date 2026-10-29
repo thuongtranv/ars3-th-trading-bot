@@ -1,0 +1,90 @@
+# ARS-3 alert bot: alerts only, never trades. Every threshold lives here.
+#
+# Defaults are round numbers taken from the 27/10/2026 research note (unverified, written after the
+# events, n = 3-5 cycles). They are NOT fitted or tuned: treat each one as a hypothesis to test.
+
+paths:                             # relative to the working directory
+  cache: data/cache
+  state: data/state.json
+  runs: data/alert_runs.csv        # one row per run: every value, every flag, the verdict
+  logfile: data/ars3_alert.log
+  backtest: data/backtest_days.csv  # per-day verdicts written by `backtest`
+  regime: data/regime_state.json   # read-only bridge file for other processes (e.g. ARS-3)
+
+run:
+  every_hours: 6
+  shadow: true                     # true: alerts are prefixed [SHADOW] while the bot is being validated
+  max_stale_days: 3                # use cached data up to this old when a fetch fails
+
+price:
+  exchange: binance
+  symbol: BTC/USDT
+  since: "2017-09-01"              # MA200w needs 1400 days, so it is valid from ~mid 2021 on Binance data
+
+# lag_days: publication delay, applied so a backtest sees a value only when it was really available.
+# ffill_days: how many days a value may be carried forward before the flag becomes missing.
+# Field names marked UNVERIFIED are guesses: run `python -m ars3_alert verify` and fix them.
+sources:
+  fng:        {lag_days: 0}
+  funding:    {lag_days: 0, exchange: binanceusdm, symbol: "BTC/USDT:USDT", since: "2019-09-10"}
+  stablecoin: {lag_days: 1}
+  etf:
+    lag_days: 1
+    flow: true                     # no print on a non-trading day means zero flow
+    url: https://www.tftc.io/bitcoin-etf-flows/data.json
+    rows_key: null                 # UNVERIFIED: key holding the list of rows, null if the payload is a list
+    date_key: date                 # UNVERIFIED
+    value_key: netFlow             # UNVERIFIED (daily net flow in USD)
+  mnav:
+    lag_days: 1
+    ffill_days: 35
+    path: data/mnav.csv            # manual file with header: date,mnav
+  onchain:
+    lag_days: 7                    # pessimistic: the free tier may serve data only outside a 7-day window
+    base_url: https://api.bitcoin-data.com
+    token_env: BGEOMETRICS_API_KEY
+    metrics:                       # fill in after `verify`: {path: /v1/..., date_key: d, value_key: ...}
+      sth_cost_basis: null
+      lth_realized_loss: null
+      true_market_mean: null
+
+phase:                             # layer 1: context only, never a trigger
+  halvings: ["2012-11-28", "2016-07-09", "2020-05-11", "2024-04-20"]
+  top_zone_days: [525, 546]        # last 3 tops; unreviewed preprint
+
+regime:                            # layer 2: share of available "close above" tests
+  fast_ma_weeks: 50
+  slow_ma_weeks: 200
+  min_available: 2
+  bull_share: 0.75
+  bear_share: 0.25
+
+stress:                            # layer 3: alert when >= min_flags of the available flags fire
+  min_flags: 4
+  clear_flags: 3                   # once on, stays on until fewer flags fire (hysteresis)
+  min_available: 5                 # fewer data-backed flags means no verdict
+  min_history_days: 365            # percentile tests stay missing until they have this much history
+  fng_below: 15
+  mnav_below: 1.0
+  etf_window_days: 30
+  etf_percentile: 0.02             # 30d net flow in the lowest 2% of its own history
+  stablecoin_window_days: 30
+  stablecoin_change_pct: -2.0
+  lth_loss_window_days: 7
+  lth_loss_percentile: 0.95
+  ma200w_touch_pct: 2.0            # daily low within this % above the 200w MA, or below it
+  funding_window_days: 7
+  funding_percentile: 0.05         # funding in the lowest 5% of its own history
+
+recovery:                          # layer 4: confirmation count
+  min_confirmations: 3
+  etf_positive_weeks: 2
+  funding_neutral_abs: 0.0001      # per 8h; Binance baseline is 0.0001
+
+backtest:
+  # Windows from the 27/10/2026 research note: in-sample by construction, n = 4 events.
+  milestones:
+    top:      ["2025-09-20", "2025-10-20"]
+    panic:    ["2026-02-01", "2026-02-28"]
+    bottom:   ["2026-06-15", "2026-07-05"]
+    recovery: ["2026-08-01", "2026-09-30"]

@@ -3,23 +3,13 @@ import platform
 import subprocess
 import time
 import threading
-import requests
+
+from common.notify import send_telegram
 
 # ---- Paths ----
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_SCRIPT = os.path.join(BASE_DIR, "ars3_live_advanced_final.py")
 DASH_SCRIPT = os.path.join(BASE_DIR, "streamlit_ars3_advanced.py")
-
-# ---- Telegram config ----
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print(f"❌ Telegram send failed: {e}")
 
 # ---- Function to start process with auto-restart + alert ----
 def start_process(command, name):

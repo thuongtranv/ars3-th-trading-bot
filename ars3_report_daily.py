@@ -2,20 +2,17 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 from datetime import datetime
-from dotenv import load_dotenv
-import requests
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 
-load_dotenv()
+from common.env import get_env
+from common.notify import send_telegram, send_telegram_photo
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-EMAIL_USER = os.getenv("EMAIL_USER")       # optional
-EMAIL_PASS = os.getenv("EMAIL_PASS")       # optional
-EMAIL_TO = os.getenv("EMAIL_TO")           # optional
+EMAIL_USER = get_env("EMAIL_USER")       # optional
+EMAIL_PASS = get_env("EMAIL_PASS")       # optional
+EMAIL_TO = get_env("EMAIL_TO")           # optional
 
 # Load logs
 trades_file = "trades_live.csv"
@@ -118,31 +115,11 @@ if os.path.exists(trades_file) and os.path.exists(equity_file):
     
 {'✅ Profitable Day!' if total_pnl > 0 else '❌ Loss Day' if total_pnl < 0 else '➖ Break-even Day'}"""
 
-    # Send text report via Telegram
-    if BOT_TOKEN and CHAT_ID:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            response = requests.post(url, data={"chat_id": CHAT_ID, "text": report_msg})
-            if response.status_code == 200:
-                print("✅ Daily report sent via Telegram")
-            else:
-                print(f"❌ Failed to send Telegram message: {response.text}")
-        except Exception as e:
-            print(f"❌ Telegram error: {e}")
-
-        # Send chart via Telegram
-        try:
-            url_photo = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-            with open(chart_file, 'rb') as f:
-                response = requests.post(url_photo, data={"chat_id": CHAT_ID}, files={"photo": f})
-                if response.status_code == 200:
-                    print("✅ Chart sent via Telegram")
-                else:
-                    print(f"❌ Failed to send chart: {response.text}")
-        except Exception as e:
-            print(f"❌ Error sending chart: {e}")
-    else:
-        print("❌ Telegram credentials not configured")
+    print("✅ Daily report sent via Telegram" if send_telegram(report_msg) else "❌ Failed to send Telegram message")
+    try:
+        print("✅ Chart sent via Telegram" if send_telegram_photo(chart_file) else "❌ Failed to send chart")
+    except OSError as e:
+        print(f"❌ Error sending chart: {e}")
 
     # Optional: Email report
     if EMAIL_USER and EMAIL_PASS and EMAIL_TO:
@@ -186,10 +163,4 @@ else:
     error_msg = "❌ Chưa có dữ liệu trades hoặc equity để tạo report."
     print(error_msg)
     
-    # Send error notification via Telegram
-    if BOT_TOKEN and CHAT_ID:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url, data={"chat_id": CHAT_ID, "text": f"🤖 ARS-3 Daily Report:\n{error_msg}"})
-        except Exception as e:
-            print(f"Telegram error: {e}")
+    send_telegram(error_msg, prefix="🤖 ARS-3 Daily Report:\n")

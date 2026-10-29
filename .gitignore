@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.env
+data/
+*.log
+position.json
+trades_live.csv
+equity_live.csv
+backtest_*.csv
+backtest_results.png

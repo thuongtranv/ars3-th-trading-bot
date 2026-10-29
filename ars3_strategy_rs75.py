@@ -39,6 +39,11 @@ DEFAULT_CFG = {
     "max_size_pct": 0.1,  # Max 10% of balance per trade
 }
 
+def strategy_cfg(config: Dict) -> Dict:
+    """RS-75 params from the main config; risk_pct always follows risk_per_trade."""
+    risk_pct = config.get("risk_per_trade", DEFAULT_CFG["risk_pct"])
+    return {**config.get("rs75_strategy", {}), "risk_pct": risk_pct}
+
 def validate_config(cfg: Dict) -> Dict:
     """Validate and sanitize configuration parameters."""
     validated = DEFAULT_CFG.copy()

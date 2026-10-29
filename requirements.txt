@@ -1,0 +1,11 @@
+ccxt
+pandas>=2.2
+numpy
+matplotlib
+pyyaml
+python-dotenv
+requests
+schedule
+streamlit
+plotly
+pytest

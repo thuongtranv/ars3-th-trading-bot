@@ -3,31 +3,18 @@ import os
 import time
 from datetime import datetime
 import schedule
-import yaml
 import json
-import requests
 import logging
-from dotenv import load_dotenv
 
 # Import strategy and broker
 from ars3_broker_ccxt import Broker
-from ars3_strategy_rs75 import generate_signals, DEFAULT_CFG as RS75_DEFAULT_CFG
+from ars3_strategy_rs75 import generate_signals, strategy_cfg
+from common.env import load_yaml
+from common.log import setup_logging
+from common.notify import send_telegram as notify
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('ars3_bot.log'),
-        logging.StreamHandler()
-    ]
-)
+setup_logging("ars3_bot.log")
 logger = logging.getLogger(__name__)
-
-# ---- Load Environment & Config ----
-load_dotenv()
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def validate_config(config):
     """Validate configuration parameters"""
@@ -43,8 +30,7 @@ def validate_config(config):
         raise ValueError("initial_capital must be positive")
 
 try:
-    with open("ars3_config.yaml", "r") as f:
-        config = yaml.safe_load(f)
+    config = load_yaml("ars3_config.yaml")
     validate_config(config)
 except Exception as e:
     logger.error(f"Configuration error: {e}")
@@ -54,18 +40,17 @@ except Exception as e:
 COINS = config.get("coins", ["BTC/USDT"])
 TIMEFRAME = config.get("timeframe", "1h")
 INITIAL_CAPITAL = config.get("initial_capital", 10000)
-RISK_PER_TRADE = config.get("risk_per_trade", 0.01)
 MAX_DD_PERCENT = config.get("max_dd_percent", 15)
 SIMULATION_MODE = config.get("simulation_mode", True)
-STRATEGY_CONFIG = config.get("rs75_strategy", RS75_DEFAULT_CFG)
-STRATEGY_CONFIG['risk_pct'] = RISK_PER_TRADE
+STRATEGY_CONFIG = strategy_cfg(config)
 
 # ---- Global Variables & Logs ----
 broker = Broker(config_path="ars3_config.yaml")
-best_coin = None
 equity_log = []
 trades_log = []
 current_balance = INITIAL_CAPITAL
+peak_balance = INITIAL_CAPITAL
+halted = False
 position = {}  # FIXED: Global position state
 POSITION_FILE = "position.json"
 last_api_call = 0
@@ -122,24 +107,8 @@ def validate_position_size(size, balance, price, min_size=0.001):
     
     return True, "OK"
 
-# ---- Telegram Helper ----
-@rate_limit(min_interval=1.0)
 def send_telegram(msg):
-    """Send Telegram message with error handling and rate limiting"""
-    if not BOT_TOKEN or not CHAT_ID:
-        logger.warning("Telegram credentials not configured")
-        return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        response = requests.post(
-            url, 
-            data={"chat_id": CHAT_ID, "text": f"🤖 ARS-3 Bot:\n{msg}"}, 
-            timeout=10
-        )
-        if response.status_code != 200:
-            logger.warning(f"Telegram API error: {response.text}")
-    except Exception as e:
-        logger.error(f"Telegram error: {e}")
+    return notify(msg, prefix="🤖 ARS-3 Bot:\n")
 
 # ---- Balance Management ----
 def update_balance(pnl=0.0):
@@ -165,33 +134,42 @@ def get_current_balance():
             return current_balance
 
 def check_emergency_stop():
-    """Check for emergency stop conditions"""
-    global current_balance
-    
-    # Daily loss check
-    daily_loss_pct = ((current_balance - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100
-    if daily_loss_pct < -MAX_DD_PERCENT:
-        logger.critical(f"Emergency stop triggered: Daily loss {daily_loss_pct:.2f}%")
-        send_telegram(f"🚨 EMERGENCY STOP: Daily loss {daily_loss_pct:.2f}%")
-        return True
-    
-    return False
+    """Halt when balance is more than MAX_DD_PERCENT below its peak; alert once per breach."""
+    global peak_balance, halted
+    peak_balance = max(peak_balance, current_balance)
+    drawdown_pct = (peak_balance - current_balance) / peak_balance * 100
+    breached = drawdown_pct > MAX_DD_PERCENT
+    if breached and not halted:
+        logger.critical(f"Emergency stop triggered: drawdown {drawdown_pct:.2f}% from peak")
+        send_telegram(f"🚨 EMERGENCY STOP: drawdown {drawdown_pct:.2f}% from peak")
+    halted = breached
+    return breached
 
 # ---- Main Logic ----
-def update_best_coin():
-    """Update best coin selection with error handling"""
-    global best_coin
-    try:
-        if COINS:
-            new_best_coin = COINS[0]  # Simplified selection
-            if new_best_coin != best_coin:
-                best_coin = new_best_coin
-                broker.symbol = best_coin
-                msg = f"🏆 Switched to trade coin: {best_coin}"
-                logger.info(msg)
-                send_telegram(msg)
-    except Exception as e:
-        logger.error(f"Error updating best coin: {e}")
+def load_df(symbol):
+    """Fetch and validate OHLCV for `symbol`; None when unusable."""
+    ohlcv = broker.fetch_ohlcv(limit=200, symbol=symbol)
+    if not ohlcv:
+        logger.warning(f"{symbol}: no OHLCV data, skipping")
+        return None
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    is_valid, error_msg = validate_ohlcv_data(df)
+    if not is_valid:
+        logger.warning(f"{symbol}: data validation failed: {error_msg}")
+        return None
+    return df
+
+def find_entry(balance):
+    """First coin, in config order, with an entry signal: (symbol, df, signals)."""
+    for symbol in COINS:
+        df = load_df(symbol)
+        if df is None:
+            continue
+        signals = generate_signals(df, cfg=STRATEGY_CONFIG, balance=balance)
+        if signals:
+            return symbol, df, signals
+    return None, None, []
 
 def calculate_pnl(entry_price, exit_price, size, position_type):
     """Calculate PnL for a trade"""
@@ -242,33 +220,14 @@ def trading_loop():
             logger.critical("Trading halted due to emergency stop")
             return
 
-        if not best_coin:
-            logger.warning("No best coin selected, skipping cycle")
-            return
-
-        logger.info(f"Running cycle for {best_coin}")
-
-        # 1. Fetch and validate data
-        ohlcv = broker.fetch_ohlcv(limit=200)
-        if not ohlcv:
-            logger.warning("No OHLCV data received, skipping cycle")
-            return
-            
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        
-        # FIXED: Validate data quality
-        is_valid, error_msg = validate_ohlcv_data(df)
-        if not is_valid:
-            logger.warning(f"Data validation failed: {error_msg}")
-            return
-        
-        current_price = df['close'].iloc[-1]
-        current_high = df['high'].iloc[-1]
-        current_low = df['low'].iloc[-1]
-
-        # 2. FIXED: Handle position exits with proper price checking
+        # 1. Manage the open position on its own symbol
         if position:
+            df = load_df(position["symbol"])
+            if df is None:
+                return
+            current_price = df['close'].iloc[-1]
+            current_high = df['high'].iloc[-1]
+            current_low = df['low'].iloc[-1]
             try:
                 sl_price = position.get("stop_loss", 0)
                 tp1_price = position.get("tp1", 0)
@@ -396,15 +355,16 @@ def trading_loop():
             except Exception as e:
                 logger.error(f"Error processing position exits: {e}")
 
-        # 3. Check for new entry signals
+        # 2. While flat, scan every coin for a new entry
         if not position:
             try:
                 balance = get_current_balance()
-                signals = generate_signals(df, cfg=STRATEGY_CONFIG, balance=balance)
-                
+                symbol, df, signals = find_entry(balance)
+
                 if signals:
                     signal = signals[0]
-                    
+                    current_price = df['close'].iloc[-1]
+
                     # FIXED: Validate position size
                     is_valid, error_msg = validate_position_size(
                         signal.get('size'), balance, current_price
@@ -421,7 +381,7 @@ def trading_loop():
                         else:
                             tp2 = signal['price'] - (signal['price'] - signal['tp1']) * 2
 
-                    msg = (f"🎯 New Signal: {signal['type']} {best_coin}\n"
+                    msg = (f"🎯 New Signal: {signal['type']} {symbol}\n"
                            f"Price: {current_price:.4f}\n"  # FIXED: Use current price
                            f"Stop: {signal['stop']:.4f}\n"
                            f"TP1: {signal['tp1']:.4f}\n"
@@ -436,7 +396,7 @@ def trading_loop():
                     actual_price = current_price  # Default execution price
                     
                     if not SIMULATION_MODE:
-                        order = broker.execute_order(best_coin, side, size)
+                        order = broker.execute_order(symbol, side, size)
                         if not order:
                             logger.error("Order execution failed")
                             return
@@ -445,7 +405,7 @@ def trading_loop():
 
                     # FIXED: Save position with actual execution price
                     position = {
-                        "symbol": best_coin,
+                        "symbol": symbol,
                         "type": signal['type'],
                         "size": size,
                         "entry_price": actual_price,  # Use actual price
@@ -459,7 +419,7 @@ def trading_loop():
                     
                     trades_log.append({
                         "timestamp": datetime.now(),
-                        "symbol": best_coin,
+                        "symbol": symbol,
                         "type": signal['type'],
                         "price": actual_price,
                         "size": size,
@@ -469,7 +429,7 @@ def trading_loop():
             except Exception as e:
                 logger.error(f"Error processing entry signals: {e}")
 
-        # 4. Log equity and save data
+        # 3. Log equity and save data
         try:
             current_equity = get_current_balance()
             equity_log.append({"timestamp": datetime.now(), "equity": current_equity})
@@ -493,12 +453,7 @@ if __name__ == "__main__":
     send_telegram("Bot is starting up...")
     
     try:
-        # Initial setup
-        update_best_coin()
         trading_loop()
-
-        # Schedule jobs
-        schedule.every(1).hours.do(update_best_coin)
         schedule.every(1).minutes.do(trading_loop)
 
         logger.info("Bot started successfully. Waiting for scheduled tasks...")

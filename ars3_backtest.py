@@ -1,34 +1,25 @@
 """
-ars3_backtest.py (FIXED VERSION)
-Improved backtest engine for ARS-3 with proper position tracking and intrabar execution
+ars3_backtest.py
+Backtest engine for the RS-75 strategy.
+
+Execution model: a signal is computed from closed bars up to i-1 and filled at the open of bar i.
+Exits are checked against each bar's high/low, stop-loss before targets (conservative).
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import yaml
+import ccxt
 import logging
 from datetime import datetime
-from ars3_strategy_rs75 import generate_signals
+
+from ars3_strategy_rs75 import generate_signals, strategy_cfg
 from ars3_broker_ccxt import Broker
+from common.env import load_yaml
+from common.log import setup_logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-class BacktestEngine:
-    def __init__(self, initial_balance: float = 10000):
-        self.initial_balance = initial_balance
-        self.balance = initial_balance
-        self.equity_curve = []
-        self.trades = []
-        self.position = None
-        
-    def reset(self):
-        """Reset backtest state."""
-        self.balance = self.initial_balance
-        self.equity_curve = []
-        self.trades = []
-        self.position = None
+FILL_CAP = 0.95  # max share of the balance a position may use as notional
 
 def validate_ohlcv_data(df: pd.DataFrame) -> tuple:
     """Validate OHLCV data for backtesting."""
@@ -63,369 +54,122 @@ def validate_ohlcv_data(df: pd.DataFrame) -> tuple:
     
     return True, "Data validation passed"
 
-def backtest(df: pd.DataFrame, cfg: dict, initial_balance: float = 10000.0) -> tuple:
-    """
-    Enhanced backtest with intrabar execution and proper position tracking.
-    
-    Args:
-        df: OHLCV DataFrame with columns [timestamp, open, high, low, close, volume]
-        cfg: Configuration dict containing rs75_strategy parameters
-        initial_balance: Starting balance for backtest
-    
-    Returns:
-        tuple: (df_with_equity, trades_list)
-    """
-    try:
-        # Validate input data
-        is_valid, error_msg = validate_ohlcv_data(df)
-        if not is_valid:
-            raise ValueError(f"Data validation failed: {error_msg}")
-        
-        df = df.copy().reset_index(drop=True)
-        
-        # Initialize backtest state
-        engine = BacktestEngine(initial_balance)
-        equity_curve = []
-        trades = []
-        
-        # Position tracking
-        position = None
-        
-        logger.info(f"Starting backtest with {len(df)} bars, balance: {initial_balance}")
-        
-        for i in range(len(df)):
-            current_bar = df.iloc[i]
-            current_open = current_bar['open']
-            current_high = current_bar['high']
-            current_low = current_bar['low']
-            current_close = current_bar['close']
-            current_time = current_bar.get('timestamp', i)
-            
-            # FIXED: Handle position exits first using intrabar prices
-            if position is not None:
-                entry_price = position['entry_price']
-                stop_loss = position['stop_loss']
-                tp1 = position['tp1']
-                tp2 = position['tp2']
-                position_type = position['type']
-                size = position['size']
-                has_hit_tp1 = position.get('has_hit_tp1', False)
-                
-                # Track if position was closed this bar
-                position_closed = False
-                
-                # Check stop loss first (highest priority)
-                if position_type == 'BUY':
-                    if current_low <= stop_loss:
-                        # Long position stopped out
-                        exit_price = stop_loss
-                        pnl = (exit_price - entry_price) * size
-                        engine.balance += pnl
-                        
-                        trades.append({
-                            'timestamp': current_time,
-                            'type': 'STOP_LOSS',
-                            'entry_type': position_type,
-                            'entry_price': entry_price,
-                            'exit_price': exit_price,
-                            'size': size,
-                            'pnl': pnl,
-                            'balance': engine.balance,
-                            'reason': 'Stop Loss Hit'
-                        })
-                        
-                        position = None
-                        position_closed = True
-                        logger.debug(f"Bar {i}: STOP LOSS - BUY position closed at {exit_price}, PnL: {pnl:.2f}")
-                
-                else:  # SELL position
-                    if current_high >= stop_loss:
-                        # Short position stopped out
-                        exit_price = stop_loss
-                        pnl = (entry_price - exit_price) * size
-                        engine.balance += pnl
-                        
-                        trades.append({
-                            'timestamp': current_time,
-                            'type': 'STOP_LOSS',
-                            'entry_type': position_type,
-                            'entry_price': entry_price,
-                            'exit_price': exit_price,
-                            'size': size,
-                            'pnl': pnl,
-                            'balance': engine.balance,
-                            'reason': 'Stop Loss Hit'
-                        })
-                        
-                        position = None
-                        position_closed = True
-                        logger.debug(f"Bar {i}: STOP LOSS - SELL position closed at {exit_price}, PnL: {pnl:.2f}")
-                
-                # Check take profits if position still open
-                if not position_closed and position is not None:
-                    if position_type == 'BUY':
-                        # Check TP1
-                        if not has_hit_tp1 and current_high >= tp1:
-                            exit_price = tp1
-                            tp1_size = size * 0.5  # Close 50%
-                            pnl = (exit_price - entry_price) * tp1_size
-                            engine.balance += pnl
-                            
-                            trades.append({
-                                'timestamp': current_time,
-                                'type': 'TAKE_PROFIT_1',
-                                'entry_type': position_type,
-                                'entry_price': entry_price,
-                                'exit_price': exit_price,
-                                'size': tp1_size,
-                                'pnl': pnl,
-                                'balance': engine.balance,
-                                'reason': 'Take Profit 1'
-                            })
-                            
-                            # Update position - keep remaining 50%
-                            position['size'] = size * 0.5
-                            position['has_hit_tp1'] = True
-                            logger.debug(f"Bar {i}: TP1 - 50% of BUY position closed at {exit_price}, PnL: {pnl:.2f}")
-                        
-                        # Check TP2 (only if TP1 was hit)
-                        elif has_hit_tp1 and current_high >= tp2:
-                            exit_price = tp2
-                            remaining_size = position['size']
-                            pnl = (exit_price - entry_price) * remaining_size
-                            engine.balance += pnl
-                            
-                            trades.append({
-                                'timestamp': current_time,
-                                'type': 'TAKE_PROFIT_2',
-                                'entry_type': position_type,
-                                'entry_price': entry_price,
-                                'exit_price': exit_price,
-                                'size': remaining_size,
-                                'pnl': pnl,
-                                'balance': engine.balance,
-                                'reason': 'Take Profit 2'
-                            })
-                            
-                            position = None
-                            position_closed = True
-                            logger.debug(f"Bar {i}: TP2 - Remaining BUY position closed at {exit_price}, PnL: {pnl:.2f}")
-                    
-                    else:  # SELL position
-                        # Check TP1
-                        if not has_hit_tp1 and current_low <= tp1:
-                            exit_price = tp1
-                            tp1_size = size * 0.5
-                            pnl = (entry_price - exit_price) * tp1_size
-                            engine.balance += pnl
-                            
-                            trades.append({
-                                'timestamp': current_time,
-                                'type': 'TAKE_PROFIT_1',
-                                'entry_type': position_type,
-                                'entry_price': entry_price,
-                                'exit_price': exit_price,
-                                'size': tp1_size,
-                                'pnl': pnl,
-                                'balance': engine.balance,
-                                'reason': 'Take Profit 1'
-                            })
-                            
-                            position['size'] = size * 0.5
-                            position['has_hit_tp1'] = True
-                            logger.debug(f"Bar {i}: TP1 - 50% of SELL position closed at {exit_price}, PnL: {pnl:.2f}")
-                        
-                        # Check TP2
-                        elif has_hit_tp1 and current_low <= tp2:
-                            exit_price = tp2
-                            remaining_size = position['size']
-                            pnl = (entry_price - exit_price) * remaining_size
-                            engine.balance += pnl
-                            
-                            trades.append({
-                                'timestamp': current_time,
-                                'type': 'TAKE_PROFIT_2',
-                                'entry_type': position_type,
-                                'entry_price': entry_price,
-                                'exit_price': exit_price,
-                                'size': remaining_size,
-                                'pnl': pnl,
-                                'balance': engine.balance,
-                                'reason': 'Take Profit 2'
-                            })
-                            
-                            position = None
-                            position_closed = True
-                            logger.debug(f"Bar {i}: TP2 - Remaining SELL position closed at {exit_price}, PnL: {pnl:.2f}")
-            
-            # Check for new entry signals (only if no position)
-            if position is None:
-                try:
-                    # Build window for signal generation (up to current bar)
-                    window = df.iloc[:i+1].copy()
-                    
-                    # Generate signals
-                    signals = generate_signals(window, cfg.get("rs75_strategy", {}), balance=engine.balance)
-                    
-                    if signals:
-                        signal = signals[0]  # Take first valid signal
-                        
-                        # Validate signal has required fields
-                        required_fields = ['type', 'price', 'stop', 'tp1', 'size']
-                        if not all(field in signal and signal[field] is not None for field in required_fields):
-                            logger.warning(f"Bar {i}: Invalid signal - missing fields: {signal}")
-                            continue
-                        
-                        # FIXED: Use realistic entry price (current bar's open)
-                        entry_price = current_open
-                        stop_price = signal['stop']
-                        tp1_price = signal['tp1']
-                        
-                        # Calculate TP2 if not provided
-                        tp2_price = signal.get('tp2')
-                        if tp2_price is None:
-                            if signal['type'] == 'BUY':
-                                tp2_price = entry_price + (tp1_price - entry_price) * 2
-                            else:
-                                tp2_price = entry_price - (entry_price - tp1_price) * 2
-                        
-                        # Validate position size
-                        size = signal['size']
-                        if size <= 0:
-                            logger.warning(f"Bar {i}: Invalid position size: {size}")
-                            continue
-                        
-                        # Check if we have enough balance
-                        required_margin = size * entry_price
-                        if required_margin > engine.balance * 0.95:  # Don't use more than 95% of balance
-                            logger.warning(f"Bar {i}: Insufficient balance for position")
-                            continue
-                        
-                        # Create position
-                        position = {
-                            'type': signal['type'],
-                            'entry_price': entry_price,
-                            'size': size,
-                            'stop_loss': stop_price,
-                            'tp1': tp1_price,
-                            'tp2': tp2_price,
-                            'has_hit_tp1': False,
-                            'entry_bar': i
-                        }
-                        
-                        # Log entry trade
-                        trades.append({
-                            'timestamp': current_time,
-                            'type': 'ENTRY',
-                            'entry_type': signal['type'],
-                            'entry_price': entry_price,
-                            'size': size,
-                            'stop_loss': stop_price,
-                            'tp1': tp1_price,
-                            'tp2': tp2_price,
-                            'balance': engine.balance,
-                            'reason': signal.get('reason', 'Signal generated')
-                        })
-                        
-                        logger.debug(f"Bar {i}: NEW {signal['type']} position opened at {entry_price}")
-                        
-                except Exception as e:
-                    logger.error(f"Bar {i}: Error generating signals: {e}")
-                    continue
-            
-            # Record equity
-            equity_curve.append(engine.balance)
-        
-        # Add equity curve to dataframe
-        df['equity'] = equity_curve
-        
-        logger.info(f"Backtest completed. Final balance: {engine.balance:.2f}")
-        logger.info(f"Total trades: {len([t for t in trades if t['type'] == 'ENTRY'])}")
-        
-        return df, trades
-        
-    except Exception as e:
-        logger.error(f"Backtest failed: {e}", exc_info=True)
-        return df, []
+def _open_position(history, entry_price, scfg, balance, trade_id):
+    """Position for the next bar's open from signals on closed bars; None if there is no valid one."""
+    signals = generate_signals(history, scfg, balance=balance)
+    if not signals:
+        return None
+    s = signals[0]
+    direction = 1 if s["type"] == "BUY" else -1
+    tp1 = s["tp1"]
+    # Levels come from the previous close; the fill at the next open can land on the wrong side of them.
+    if direction * (tp1 - entry_price) <= 0 or direction * (entry_price - s["stop"]) <= 0:
+        return None
+    if s["size"] * entry_price > balance * FILL_CAP:
+        return None
+    return {
+        "id": trade_id, "type": s["type"], "direction": direction,
+        "entry_price": entry_price, "size": s["size"], "stop_loss": s["stop"],
+        "tp1": tp1, "tp2": s.get("tp2") or entry_price + 2 * (tp1 - entry_price),
+        "has_hit_tp1": False, "reason": s.get("reason", ""),
+    }
 
-def calculate_metrics(df: pd.DataFrame, trades: list, initial_balance: float) -> dict:
-    """Calculate comprehensive backtest metrics."""
-    try:
-        if df.empty or not trades:
-            return {
-                'initial_balance': initial_balance,
-                'final_balance': initial_balance,
-                'total_return_pct': 0,
-                'max_drawdown_pct': 0,
-                'total_trades': 0,
-                'winning_trades': 0,
-                'losing_trades': 0,
-                'win_rate_pct': 0,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'profit_factor': 0,
-                'sharpe_ratio': 0
-            }
-        
-        final_balance = df['equity'].iloc[-1]
-        total_return = (final_balance - initial_balance) / initial_balance * 100
-        
-        # Drawdown calculation
-        equity_series = df['equity']
-        peak = equity_series.expanding().max()
-        drawdown = (peak - equity_series) / peak * 100
-        max_drawdown = drawdown.max()
-        
-        # Trade statistics
-        entry_trades = [t for t in trades if t['type'] == 'ENTRY']
-        pnl_trades = [t for t in trades if 'pnl' in t and t['pnl'] is not None]
-        
-        winning_trades = [t for t in pnl_trades if t['pnl'] > 0]
-        losing_trades = [t for t in pnl_trades if t['pnl'] < 0]
-        
-        total_trades = len(entry_trades)
-        win_count = len(winning_trades)
-        loss_count = len(losing_trades)
-        win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
-        
-        avg_win = np.mean([t['pnl'] for t in winning_trades]) if winning_trades else 0
-        avg_loss = np.mean([t['pnl'] for t in losing_trades]) if losing_trades else 0
-        
-        profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
-        
-        # Sharpe ratio (simplified - assumes daily returns)
-        if len(equity_series) > 1:
-            returns = equity_series.pct_change().dropna()
-            sharpe_ratio = returns.mean() / returns.std() * np.sqrt(252) if returns.std() != 0 else 0
-        else:
-            sharpe_ratio = 0
-        
-        metrics = {
-            'initial_balance': initial_balance,
-            'final_balance': final_balance,
-            'total_return_pct': total_return,
-            'max_drawdown_pct': max_drawdown,
-            'total_trades': total_trades,
-            'winning_trades': win_count,
-            'losing_trades': loss_count,
-            'win_rate_pct': win_rate,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'profit_factor': profit_factor,
-            'sharpe_ratio': sharpe_ratio,
-            'total_pnl': sum(t.get('pnl', 0) for t in pnl_trades)
+def _exit_fill(pos, bar):
+    """First exit on this bar as (kind, price, size). Stop-loss is checked before targets."""
+    d = pos["direction"]
+    adverse, favorable = (bar["low"], bar["high"]) if d > 0 else (bar["high"], bar["low"])
+    if d * (adverse - pos["stop_loss"]) <= 0:
+        return "STOP_LOSS", pos["stop_loss"], pos["size"]
+    if not pos["has_hit_tp1"] and d * (favorable - pos["tp1"]) >= 0:
+        return "TAKE_PROFIT_1", pos["tp1"], pos["size"] / 2
+    if pos["has_hit_tp1"] and d * (favorable - pos["tp2"]) >= 0:
+        return "TAKE_PROFIT_2", pos["tp2"], pos["size"]
+    return None
+
+def backtest(df: pd.DataFrame, cfg: dict, initial_balance: float = 10000.0) -> tuple:
+    """Returns (df with a mark-to-market 'equity' column, list of trade records)."""
+    ok, msg = validate_ohlcv_data(df)
+    if not ok:
+        raise ValueError(f"Data validation failed: {msg}")
+
+    df = df.reset_index(drop=True)
+    scfg = strategy_cfg(cfg)
+    balance, position, trades, equity = initial_balance, None, [], []
+    logger.info(f"Starting backtest with {len(df)} bars, balance: {initial_balance}")
+
+    for i, bar in df.iterrows():
+        ts = bar.get("timestamp", i)
+
+        if position is None:
+            position = _open_position(df.iloc[:i], bar["open"], scfg, balance, trade_id=i)
+            if position:
+                trades.append({
+                    "timestamp": ts, "type": "ENTRY", "trade_id": i, "entry_type": position["type"],
+                    "entry_price": position["entry_price"], "size": position["size"],
+                    "stop_loss": position["stop_loss"], "tp1": position["tp1"], "tp2": position["tp2"],
+                    "balance": balance, "reason": position["reason"],
+                })
+
+        fill = _exit_fill(position, bar) if position else None
+        if fill:
+            kind, price, size = fill
+            pnl = position["direction"] * (price - position["entry_price"]) * size
+            balance += pnl
+            trades.append({
+                "timestamp": ts, "type": kind, "trade_id": position["id"], "entry_type": position["type"],
+                "entry_price": position["entry_price"], "exit_price": price, "size": size,
+                "pnl": pnl, "balance": balance, "reason": kind,
+            })
+            if kind == "TAKE_PROFIT_1":
+                position["size"] -= size
+                position["has_hit_tp1"] = True
+            else:
+                position = None
+
+        open_pnl = position["direction"] * (bar["close"] - position["entry_price"]) * position["size"] if position else 0.0
+        equity.append(balance + open_pnl)
+
+    df["equity"] = equity
+    logger.info(f"Backtest completed. Final equity: {equity[-1]:.2f}")
+    return df, trades
+
+def calculate_metrics(df: pd.DataFrame, trades: list, initial_balance: float, bars_per_year: float = 365 * 24) -> dict:
+    """Trade stats are per round trip (entry to flat), so a partial exit is not a separate trade."""
+    exits = [t for t in trades if "pnl" in t]
+    if df.empty or not exits:
+        return {
+            "initial_balance": initial_balance, "final_balance": initial_balance, "total_return_pct": 0,
+            "max_drawdown_pct": 0, "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
+            "win_rate_pct": 0, "avg_win": 0, "avg_loss": 0, "profit_factor": 0, "sharpe_ratio": 0, "total_pnl": 0,
         }
-        
-        return metrics
-        
-    except Exception as e:
-        logger.error(f"Error calculating metrics: {e}")
-        return {}
+
+    per_trade = pd.DataFrame(exits).groupby("trade_id")["pnl"].sum()
+    wins, losses = per_trade[per_trade > 0], per_trade[per_trade < 0]
+    equity = df["equity"]
+    peak = equity.cummax()
+    returns = equity.pct_change().dropna()
+    return {
+        "initial_balance": initial_balance,
+        "final_balance": equity.iloc[-1],
+        "total_return_pct": (equity.iloc[-1] / initial_balance - 1) * 100,
+        "max_drawdown_pct": ((peak - equity) / peak * 100).max(),
+        "total_trades": len(per_trade),
+        "winning_trades": len(wins),
+        "losing_trades": len(losses),
+        "win_rate_pct": len(wins) / len(per_trade) * 100,
+        "avg_win": wins.mean() if len(wins) else 0,
+        "avg_loss": losses.mean() if len(losses) else 0,
+        "profit_factor": wins.sum() / -losses.sum() if len(losses) else float("inf"),
+        "sharpe_ratio": returns.mean() / returns.std() * np.sqrt(bars_per_year) if returns.std() else 0,
+        "total_pnl": per_trade.sum(),
+    }
 
 def load_data_from_broker(symbol: str = "BTC/USDT", timeframe: str = "1h", limit: int = 1000):
     """Load data from broker for backtesting."""
     try:
         broker = Broker()
+        if broker.simulation_mode:
+            logger.warning("Broker is in simulation mode: backtesting on RANDOM data, results are meaningless")
         broker.symbol = symbol
         broker.timeframe = timeframe
         
@@ -595,8 +339,7 @@ def run_backtest(data_source: str = "broker", config_path: str = "ars3_config.ya
     
     # Load configuration
     try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+        config = load_yaml(config_path)
         logger.info(f"Configuration loaded from {config_path}")
     except Exception as e:
         logger.error(f"Error loading config: {e}")
@@ -639,7 +382,8 @@ def run_backtest(data_source: str = "broker", config_path: str = "ars3_config.ya
     print(f"Backtest completed in {(end_time - start_time).total_seconds():.2f} seconds")
     
     # Calculate metrics
-    metrics = calculate_metrics(df_result, trades, initial_balance)
+    bars_per_year = 365 * 86400 / ccxt.Exchange.parse_timeframe(config.get("timeframe", "1h"))
+    metrics = calculate_metrics(df_result, trades, initial_balance, bars_per_year)
     
     # Print results
     print("\n" + "=" * 50)
@@ -676,6 +420,7 @@ def run_backtest(data_source: str = "broker", config_path: str = "ars3_config.ya
     }
 
 if __name__ == "__main__":
+    setup_logging()
     # Example usage with error handling
     print("Starting ARS-3 Enhanced Backtest...")
     

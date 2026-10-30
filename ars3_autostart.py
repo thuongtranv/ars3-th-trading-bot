@@ -1,6 +1,6 @@
 import os
-import platform
 import subprocess
+import sys
 import time
 import threading
 
@@ -17,7 +17,7 @@ def start_process(command, name):
         try:
             print(f"🌟 Starting {name}...")
             send_telegram(f"🌟 ARS-3: Starting {name}...")
-            proc = subprocess.Popen(command, shell=True)
+            proc = subprocess.Popen(command)
             proc.wait()
             print(f"⚠️ {name} exited! Restarting in 5s...")
             send_telegram(f"⚠️ ARS-3: {name} crashed! Restarting in 5s...")
@@ -29,16 +29,10 @@ def start_process(command, name):
 
 # ---- Run bot & dashboard ----
 def run_full_stack():
-    if platform.system() == "Windows":
-        # Windows: run each in separate CMD window
-        threading.Thread(target=start_process, args=(f"python \"{BOT_SCRIPT}\"", "ARS-3 Bot")).start()
-        time.sleep(2)
-        threading.Thread(target=start_process, args=(f"streamlit run \"{DASH_SCRIPT}\"", "ARS-3 Dashboard")).start()
-    else:
-        # Linux / Mac: run in threads
-        threading.Thread(target=start_process, args=(["python3", BOT_SCRIPT], "ARS-3 Bot")).start()
-        time.sleep(2)
-        threading.Thread(target=start_process, args=(["streamlit", "run", DASH_SCRIPT], "ARS-3 Dashboard")).start()
+    """Both processes use the interpreter running this script, so they share its venv and Python version."""
+    threading.Thread(target=start_process, args=([sys.executable, BOT_SCRIPT], "ARS-3 Bot")).start()
+    time.sleep(2)
+    threading.Thread(target=start_process, args=([sys.executable, "-m", "streamlit", "run", DASH_SCRIPT], "ARS-3 Dashboard")).start()
 
 if __name__ == "__main__":
     print("🚀 Starting ARS-3 Full Stack with Auto-Restart + Telegram Alert...")

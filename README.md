@@ -38,7 +38,7 @@ ARS-3/
 
 ## Quick Start Guide
 ### 1. Prerequisites
-- Python 3.8+ installed.
+- Python 3.13 (the version the code and tests run on, see `.python-version`). Use a virtual environment: `py -3.13 -m venv .venv` on Windows.
 - A Binance account (for live trading). Get API keys from Binance dashboard.
 - Telegram bot token and chat ID (for notifications). Create a bot via BotFather.
 - Optional: Gmail for email reports (use app password for security).
@@ -48,8 +48,7 @@ Clone the repository (or download files) and navigate to the project directory.
 
 Install required libraries:
 ```
-pip install ccxt pandas numpy matplotlib pyyaml python-dotenv streamlit schedule requests
-pip install plotly
+python -m pip install -r requirements.txt
 ```
 - **ccxt**: For exchange integration.
 - **pandas/numpy/matplotlib**: Data handling and charting.

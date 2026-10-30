@@ -35,6 +35,7 @@ python -m ars3_alert run --offline      # cache only, no network
 ```
 
 Run it from the repository root: the paths in `config.yaml` are relative to the working directory.
+Use Python 3.13 inside the project's `.venv` (`.\.venv\Scripts\python.exe -m ars3_alert ...` on Windows).
 
 ## Before trusting an alert
 

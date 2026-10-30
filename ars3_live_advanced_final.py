@@ -16,6 +16,9 @@ from common.notify import send_telegram as notify
 setup_logging("ars3_bot.log")
 logger = logging.getLogger(__name__)
 
+# Allowed values per option; the first one is the default.
+OPTIONS = {"emergency_stop_reference": ("peak", "initial"), "coin_selection": ("first", "scan")}
+
 def validate_config(config):
     """Validate configuration parameters"""
     required_fields = ["coins", "timeframe", "initial_capital", "risk_per_trade"]
@@ -28,6 +31,10 @@ def validate_config(config):
     
     if config["initial_capital"] <= 0:
         raise ValueError("initial_capital must be positive")
+
+    for key, allowed in OPTIONS.items():
+        if config.get(key, allowed[0]) not in allowed:
+            raise ValueError(f"{key} must be one of {allowed}")
 
 try:
     config = load_yaml("ars3_config.yaml")
@@ -42,14 +49,33 @@ TIMEFRAME = config.get("timeframe", "1h")
 INITIAL_CAPITAL = config.get("initial_capital", 10000)
 MAX_DD_PERCENT = config.get("max_dd_percent", 15)
 SIMULATION_MODE = config.get("simulation_mode", True)
+STOP_REFERENCE = config.get("emergency_stop_reference", OPTIONS["emergency_stop_reference"][0])
+COIN_SELECTION = config.get("coin_selection", OPTIONS["coin_selection"][0])
 STRATEGY_CONFIG = strategy_cfg(config)
 
 # ---- Global Variables & Logs ----
 broker = Broker(config_path="ars3_config.yaml")
 equity_log = []
 trades_log = []
-current_balance = INITIAL_CAPITAL
-peak_balance = INITIAL_CAPITAL
+RISK_FILE = "risk_state.json"
+
+def load_risk_state():
+    """Saved balance/peak, ignored when it was written in the other mode (paper vs live)."""
+    try:
+        with open(RISK_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return saved if saved.get("simulation") == SIMULATION_MODE else {}
+
+def save_risk_state():
+    with open(RISK_FILE, "w") as f:
+        json.dump({"simulation": SIMULATION_MODE, "balance": current_balance, "peak": peak_balance}, f)
+
+_saved = load_risk_state()
+# Paper balance is restored too: the peak survives a restart, so the balance must as well.
+current_balance = _saved.get("balance", INITIAL_CAPITAL) if SIMULATION_MODE else INITIAL_CAPITAL
+peak_balance = _saved.get("peak", INITIAL_CAPITAL)
 halted = False
 position = {}  # FIXED: Global position state
 POSITION_FILE = "position.json"
@@ -115,6 +141,7 @@ def update_balance(pnl=0.0):
     """Update current balance after trades"""
     global current_balance
     current_balance += pnl
+    save_risk_state()
     logger.info(f"Balance updated: {current_balance:.2f} (PnL: {pnl:+.2f})")
     return current_balance
 
@@ -134,14 +161,17 @@ def get_current_balance():
             return current_balance
 
 def check_emergency_stop():
-    """Halt when balance is more than MAX_DD_PERCENT below its peak; alert once per breach."""
+    """Halt when balance is more than MAX_DD_PERCENT below the reference (peak or initial capital); alert once per breach."""
     global peak_balance, halted
-    peak_balance = max(peak_balance, current_balance)
-    drawdown_pct = (peak_balance - current_balance) / peak_balance * 100
+    if current_balance > peak_balance:
+        peak_balance = current_balance
+        save_risk_state()
+    reference = peak_balance if STOP_REFERENCE == "peak" else INITIAL_CAPITAL
+    drawdown_pct = (reference - current_balance) / reference * 100
     breached = drawdown_pct > MAX_DD_PERCENT
     if breached and not halted:
-        logger.critical(f"Emergency stop triggered: drawdown {drawdown_pct:.2f}% from peak")
-        send_telegram(f"🚨 EMERGENCY STOP: drawdown {drawdown_pct:.2f}% from peak")
+        logger.critical(f"Emergency stop triggered: drawdown {drawdown_pct:.2f}% from {STOP_REFERENCE}")
+        send_telegram(f"🚨 EMERGENCY STOP: drawdown {drawdown_pct:.2f}% from {STOP_REFERENCE}")
     halted = breached
     return breached
 
@@ -161,8 +191,8 @@ def load_df(symbol):
     return df
 
 def find_entry(balance):
-    """First coin, in config order, with an entry signal: (symbol, df, signals)."""
-    for symbol in COINS:
+    """First coin with an entry signal: (symbol, df, signals). `coin_selection: first` looks at the first coin only."""
+    for symbol in COINS if COIN_SELECTION == "scan" else COINS[:1]:
         df = load_df(symbol)
         if df is None:
             continue

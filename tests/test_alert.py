@@ -135,6 +135,18 @@ def test_run_log_keeps_the_union_of_columns(tmp_path):
     assert list(pd.read_csv(path).columns) == ["a", "b"] and len(pd.read_csv(path)) == 2
 
 
+def test_recent_cache_is_reused_within_refresh_hours(cfg, monkeypatch):
+    calls = []
+    monkeypatch.setitem(sources.FETCHERS, "fng", lambda c: calls.append(1) or synthetic_data()["fng"])
+    cfg["sources"]["fng"]["refresh_hours"] = 20
+    sources.load("fng", cfg)
+    _, status = sources.load("fng", cfg)
+    assert len(calls) == 1 and status.startswith("cached")
+    cfg["sources"]["fng"]["refresh_hours"] = 0
+    sources.load("fng", cfg)
+    assert len(calls) == 2
+
+
 # ---- runner end to end ----
 def serve(monkeypatch, data):
     """Make every source come from `data`; sources that are not in it fail like an unreachable API."""

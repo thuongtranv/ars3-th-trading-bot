@@ -156,9 +156,16 @@ def _read_cache(path):
     return df.squeeze("columns") if df.shape[1] == 1 else df
 
 
+def _age_days(path):
+    return (time.time() - path.stat().st_mtime) / 86400
+
+
 def load(name, cfg, offline=False):
     """Fresh data, else cache (any age offline, up to run.max_stale_days otherwise): (data, status)."""
     path = Path(cfg["paths"]["cache"]) / f"{name}.csv"
+    refresh_hours = cfg["sources"].get(name.split(".")[0], {}).get("refresh_hours", 0)
+    if not offline and path.exists() and _age_days(path) * 24 < refresh_hours:
+        return _read_cache(path), "cached (inside refresh_hours)"
     reason = "offline"
     if not offline:
         try:
@@ -171,7 +178,7 @@ def load(name, cfg, offline=False):
         except _FETCH_ERRORS as e:
             reason = str(e)
     if path.exists():
-        age_days = (time.time() - path.stat().st_mtime) / 86400
+        age_days = _age_days(path)
         if offline or age_days <= cfg["run"]["max_stale_days"]:
             return _read_cache(path), f"cached ({age_days:.1f}d old): {reason}"
     raise SourceError(f"{name}: {reason}")

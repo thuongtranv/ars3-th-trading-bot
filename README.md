@@ -77,6 +77,8 @@ No additional installs needed beyond this—CCXT handles exchange APIs.
    - `initial_capital`: Starting balance for simulation.
    - `risk_per_trade`: e.g., 0.01 (1% risk).
    - `max_dd_percent`: Max drawdown to pause trading.
+   - `emergency_stop_reference`: `peak` (default) measures that drawdown from the highest balance, kept in `risk_state.json` across restarts; `initial` measures the loss versus `initial_capital`.
+   - `coin_selection`: `first` (default) trades only the first coin in `coins`; `scan` takes the first coin, in list order, that has an entry signal.
    - `simulation_mode`: True for paper trading, False for live.
    - `exchange`: "binance" (default).
    - `futures`: True for futures market.

@@ -22,6 +22,7 @@ price:
   since: "2017-09-01"              # MA200w needs 1400 days, so it is valid from ~mid 2021 on Binance data
 
 # lag_days: publication delay, applied so a backtest sees a value only when it was really available.
+# refresh_hours: reuse a cache younger than this instead of fetching again (default 0 = always fetch).
 # ffill_days: how many days a value may be carried forward before the flag becomes missing.
 # Field names marked UNVERIFIED are guesses: run `python -m ars3_alert verify` and fix them.
 sources:
@@ -40,6 +41,7 @@ sources:
     ffill_days: 35
     path: data/mnav.csv            # manual file with header: date,mnav
   onchain:
+    refresh_hours: 20              # free tier: 15 requests/day for 3 metrics, so reuse a cache younger than this
     lag_days: 7                    # pessimistic: the free tier may serve data only outside a 7-day window
     base_url: https://api.bitcoin-data.com
     token_env: BGEOMETRICS_API_KEY

@@ -163,9 +163,51 @@ def test_emergency_stop_measures_drawdown_from_peak_and_alerts_once(live):
 
 
 def test_find_entry_scans_every_configured_coin(live, monkeypatch):
+    live.COIN_SELECTION = "scan"
     frames = {s: random_walk_ohlcv(50) for s in live.COINS}
     monkeypatch.setattr(live, "load_df", frames.get)
     signal = [{"type": "BUY"}]
     monkeypatch.setattr(live, "generate_signals", lambda df, cfg, balance: signal if df is frames[live.COINS[2]] else [])
     symbol, df, signals = live.find_entry(1000)
     assert symbol == live.COINS[2] and signals == signal
+
+
+# ---- 7. config options and persisted risk state ----
+def reimport():
+    sys.modules.pop("ars3_live_advanced_final", None)
+    return importlib.import_module("ars3_live_advanced_final")
+
+
+def test_defaults_are_peak_reference_and_first_coin_only(live, monkeypatch):
+    assert (live.STOP_REFERENCE, live.COIN_SELECTION) == ("peak", "first")
+    loaded = []
+    monkeypatch.setattr(live, "load_df", lambda symbol: loaded.append(symbol))
+    assert live.find_entry(1000) == (None, None, []) and loaded == live.COINS[:1]
+
+
+def test_initial_reference_ignores_the_peak(live):
+    live.STOP_REFERENCE = "initial"
+    live.peak_balance, live.current_balance = 12_000, 10_000  # -16.7% from the peak, flat versus initial capital
+    assert not live.check_emergency_stop()
+    live.current_balance = 8_400
+    assert live.check_emergency_stop()
+
+
+def test_peak_and_paper_balance_survive_a_restart(live):
+    live.update_balance(2_000)
+    live.check_emergency_stop()
+    live.update_balance(-1_000)
+    restarted = reimport()
+    assert (restarted.peak_balance, restarted.current_balance) == (12_000, 11_000)
+
+
+def test_risk_state_from_the_other_mode_is_ignored(live):
+    Path("risk_state.json").write_text('{"simulation": false, "balance": 5000, "peak": 99999}')
+    restarted = reimport()
+    assert (restarted.peak_balance, restarted.current_balance) == (restarted.INITIAL_CAPITAL,) * 2
+
+
+@pytest.mark.parametrize("key", ["emergency_stop_reference", "coin_selection"])
+def test_unknown_option_value_is_rejected(live, key):
+    with pytest.raises(ValueError, match=key):
+        live.validate_config({**live.config, key: "bogus"})

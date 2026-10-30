@@ -4,6 +4,8 @@ timeframe: "1h"
 initial_capital: 10000
 risk_per_trade: 0.01 # Rủi ro 1% trên mỗi giao dịch
 max_dd_percent: 15
+emergency_stop_reference: "peak"  # peak = drawdown from the highest balance (kept in risk_state.json), initial = loss versus initial_capital
+coin_selection: "first"           # first = trade only the first coin in `coins`, scan = first coin with a signal, in list order
 simulation_mode: True   # True = paper trading, False = live trading
 
 # Exchange settings

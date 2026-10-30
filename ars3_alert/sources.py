@@ -101,18 +101,29 @@ def fetch_stablecoin(cfg):
         return _daily(dates, [r["totalCirculatingUSD"]["peggedUSD"] for r in rows])
 
 
+def _only_value_key(row, date_key):
+    keys = [k for k in row if k not in (date_key, "unixTs")]
+    if len(keys) != 1:
+        raise ValueError(f"expected exactly one value field, found {keys}")
+    return keys[0]
+
+
 def _json_series(name, url, date_key, value_key, rows_key=None, unit=None, **request):
-    """Generic JSON-rows source. Field names are configured, so a mismatch lists the keys it found."""
+    """Generic JSON-rows source. A wrong field name shows the first row found, so one `verify` run is enough.
+
+    value_key None means: the one field that is neither the date nor unixTs (BGeometrics rows).
+    """
     payload = _get_json(url, **request)
     rows = payload
     try:
         rows = payload[rows_key] if rows_key else payload
+        key = value_key or _only_value_key(rows[0], date_key)
         raw_dates = [r[date_key] for r in rows]
         dates = pd.to_datetime([int(d) for d in raw_dates], unit=unit) if unit else pd.to_datetime(raw_dates)
-        return _daily(dates, [r[value_key] for r in rows])
+        return _daily(dates, [r[key] for r in rows])
     except (KeyError, TypeError, ValueError, IndexError) as e:
-        keys = list(rows[0]) if isinstance(rows, list) and rows else list(rows) if isinstance(rows, dict) else []
-        raise SourceError(f"{name}: unexpected payload ({type(e).__name__}: {e}); keys found: {keys[:15]}") from e
+        sample = rows[0] if isinstance(rows, list) and rows else list(rows) if isinstance(rows, dict) else rows
+        raise SourceError(f"{name}: unexpected payload ({type(e).__name__}: {e}); sample: {str(sample)[:300]}") from e
 
 
 def fetch_etf(cfg):

@@ -211,3 +211,52 @@ def test_evaluate_and_false_alarms(cfg):
     assert res.loc["bottom", "expected_state_on"] and not res.loc["panic", "expected_state_on"]
     assert res.loc["bottom", "first_on"].isoformat() == "2026-06-20"
     assert [d.date().isoformat() for d in backtest.false_alarms(days, cfg)] == ["2026-03-10"]
+
+
+# ---- JSON sources ----
+def fake_payload(monkeypatch, payload):
+    seen = {}
+    monkeypatch.setattr(sources, "_get_json", lambda url, **kw: seen.update(url=url, **kw) or payload)
+    return seen
+
+
+BG_ROWS = [{"d": "2026-01-01", "unixTs": 1, "sthRealizedPrice": 70_000.0},
+           {"d": "2026-01-02", "unixTs": 2, "sthRealizedPrice": 71_000.0}]
+
+
+def test_value_field_is_found_automatically_for_bgeometrics_rows(monkeypatch):
+    fake_payload(monkeypatch, BG_ROWS)
+    s = sources._json_series("x", "u", "d", None)
+    assert s.tolist() == [70_000.0, 71_000.0] and s.index[0] == pd.Timestamp("2026-01-01")
+
+
+def test_ambiguous_or_wrong_fields_report_the_first_row(monkeypatch):
+    fake_payload(monkeypatch, [{"d": "2026-01-01", "a": 1, "b": 2}])
+    with pytest.raises(sources.SourceError, match="found .*'a', 'b'"):
+        sources._json_series("x", "u", "d", None)
+    fake_payload(monkeypatch, BG_ROWS)
+    with pytest.raises(sources.SourceError, match="sthRealizedPrice"):
+        sources._json_series("x", "u", "d", "wrong")
+
+
+def test_etf_rows_are_read_from_the_days_key(cfg, monkeypatch):
+    fake_payload(monkeypatch, {"name": "x", "days": [{"date": "2026-01-02", "netFlow": -5.0}, {"date": "2026-01-03", "netFlow": 7.0}]})
+    assert sources.fetch_etf(cfg).tolist() == [-5.0, 7.0]
+
+
+def test_onchain_fetch_uses_configured_path_and_bearer_token(cfg, monkeypatch):
+    seen = fake_payload(monkeypatch, BG_ROWS)
+    with pytest.raises(sources.SourceError, match="BGEOMETRICS_API_KEY"):
+        sources.fetch_onchain(cfg, "sth_cost_basis")
+    monkeypatch.setenv("BGEOMETRICS_API_KEY", "secret-token")
+    assert sources.fetch_onchain(cfg, "sth_cost_basis").iloc[-1] == 71_000.0
+    assert seen["url"].endswith("/v1/sth-realized-price") and seen["headers"] == {"Authorization": "Bearer secret-token"}
+    assert all(m["path"].startswith("/v1/") for m in cfg["sources"]["onchain"]["metrics"].values())
+
+
+def test_lth_loss_flag_does_not_depend_on_the_sign_convention(cfg):
+    data = synthetic_data()
+    loss = pd.Series(np.random.default_rng(3).uniform(1e6, 3e8, len(data["fng"])), data["fng"].index)
+    flags = [indicators.compute({**data, "onchain.lth_realized_loss": sign * loss}, cfg)[1]["stress.lth_loss"] for sign in (1, -1)]
+    pd.testing.assert_series_equal(flags[0], flags[1])
+    assert flags[0].notna().any()

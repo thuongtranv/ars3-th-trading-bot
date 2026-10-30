@@ -33,9 +33,9 @@ sources:
     lag_days: 1
     flow: true                     # no print on a non-trading day means zero flow
     url: https://www.tftc.io/bitcoin-etf-flows/data.json
-    rows_key: null                 # UNVERIFIED: key holding the list of rows, null if the payload is a list
-    date_key: date                 # UNVERIFIED
-    value_key: netFlow             # UNVERIFIED (daily net flow in USD)
+    rows_key: days                 # verified 30/10/2026: the payload is a dict, the rows are under `days`
+    date_key: date                 # UNVERIFIED: if wrong, `verify` prints the first row of `days`
+    value_key: netFlow             # UNVERIFIED (daily net flow)
   mnav:
     lag_days: 1
     ffill_days: 35
@@ -45,10 +45,10 @@ sources:
     lag_days: 7                    # pessimistic: the free tier may serve data only outside a 7-day window
     base_url: https://api.bitcoin-data.com
     token_env: BGEOMETRICS_API_KEY
-    metrics:                       # fill in after `verify`: {path: /v1/..., date_key: d, value_key: ...}
-      sth_cost_basis: null
-      lth_realized_loss: null
-      true_market_mean: null
+    metrics:                       # paths from the BGeometrics free-plan list; value_key null = the one non-date field
+      sth_cost_basis:    {path: /v1/sth-realized-price, date_key: d, value_key: null}
+      lth_realized_loss: {path: /v1/realized_loss_lth, date_key: d, value_key: null}
+      true_market_mean:  {path: /v1/true-market-mean, date_key: d, value_key: null}
 
 phase:                             # layer 1: context only, never a trigger
   halvings: ["2012-11-28", "2016-07-09", "2020-05-11", "2024-04-20"]

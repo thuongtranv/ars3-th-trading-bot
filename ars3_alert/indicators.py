@@ -71,7 +71,7 @@ def compute(data, cfg):
         "mnav": col("mnav"),
         "etf_flow": col("etf").rolling(s["etf_window_days"]).sum(),
         "stablecoin_chg_pct": (stablecoin / stablecoin.shift(s["stablecoin_window_days"]) - 1) * 100,
-        "lth_loss": col("onchain.lth_realized_loss").rolling(s["lth_loss_window_days"]).mean(),
+        "lth_loss": col("onchain.lth_realized_loss").abs().rolling(s["lth_loss_window_days"]).mean(),  # size of the loss, whatever the sign convention
         "funding": col("funding").rolling(s["funding_window_days"]).mean(),
         "halving_days": days_since_halving(price.index, cfg["phase"]["halvings"]),
     })

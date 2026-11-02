@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -124,7 +125,7 @@ def test_store_roundtrip_and_corrupt_state(tmp_path):
     assert store.load_state(path) == State()
     store.save_state(path, State(stress_on=True, regime="mixed"))
     assert store.load_state(path) == State(stress_on=True, regime="mixed")
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     assert store.load_state(path) == State()
 
 
@@ -172,7 +173,7 @@ def test_run_once_logs_persists_and_alerts_once(cfg, monkeypatch):
     assert sent[0][1] is True and "Cụm căng thẳng BẬT" in sent[0][0] and "Nguồn không lấy được" in sent[0][0]
     assert runner.run_once(cfg, send=send).events == () and len(sent) == 1  # no repeat while the state holds
 
-    assert json.load(open(cfg["paths"]["regime"]))["stress_on"] is True
+    assert json.loads(Path(cfg["paths"]["regime"]).read_text(encoding="utf-8"))["stress_on"] is True
     log = pd.read_csv(cfg["paths"]["runs"])
     assert len(log) == 2 and "v.close" in log and "f.stress.fng" in log and log["events"].iloc[0] == "STRESS_ON"
 
@@ -240,8 +241,10 @@ def test_ambiguous_or_wrong_fields_report_the_first_row(monkeypatch):
 
 
 def test_etf_rows_are_read_from_the_days_key(cfg, monkeypatch):
-    fake_payload(monkeypatch, {"name": "x", "days": [{"date": "2026-01-02", "netFlow": -5.0}, {"date": "2026-01-03", "netFlow": 7.0}]})
-    assert sources.fetch_etf(cfg).tolist() == [-5.0, 7.0]
+    row = {"date": "2024-01-11", "netFlowUsd": 655_300_000, "totalNetAssetsUsd": None, "btcCloseUsd": 46269,
+           "perEtfUsd": {"IBIT": 111_700_000, "GBTC": -95_100_000}}  # shape of a real row, seen via `verify`
+    fake_payload(monkeypatch, {"name": "x", "days": [row, {**row, "date": "2024-01-12", "netFlowUsd": -5.0}]})
+    assert sources.fetch_etf(cfg).tolist() == [655_300_000.0, -5.0]
 
 
 def test_onchain_fetch_uses_configured_path_and_bearer_token(cfg, monkeypatch):

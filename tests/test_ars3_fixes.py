@@ -14,6 +14,7 @@ import ars3_backtest
 from ars3_backtest import backtest, calculate_metrics
 from ars3_broker_ccxt import Broker
 from ars3_strategy_rs75 import strategy_cfg
+from common.env import load_yaml
 from conftest import random_walk_ohlcv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +44,7 @@ def broker_with_keys(monkeypatch, tmp_path, **env):
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     path = tmp_path / "cfg.yaml"
-    path.write_text(yaml.dump({"exchange": "binance", "simulation_mode": False, "testnet": False, "futures": False}))
+    path.write_text(yaml.dump({"exchange": "binance", "simulation_mode": False, "testnet": False, "futures": False}), encoding="utf-8")
     captured = {}
 
     class FakeExchange:
@@ -72,7 +73,7 @@ def test_broker_without_keys_falls_back_to_simulation(monkeypatch, tmp_path):
 
 # ---- 2. backtest: equity length and mark-to-market ----
 def test_backtest_equity_covers_every_bar_with_real_strategy():
-    cfg = yaml.safe_load((ROOT / "ars3_config.yaml").read_text())
+    cfg = load_yaml(ROOT / "ars3_config.yaml")
     df, _ = backtest(random_walk_ohlcv(600), cfg)
     assert len(df["equity"]) == 600 and df["equity"].notna().all()
 
@@ -202,7 +203,7 @@ def test_peak_and_paper_balance_survive_a_restart(live):
 
 
 def test_risk_state_from_the_other_mode_is_ignored(live):
-    Path("risk_state.json").write_text('{"simulation": false, "balance": 5000, "peak": 99999}')
+    Path("risk_state.json").write_text('{"simulation": false, "balance": 5000, "peak": 99999}', encoding="utf-8")
     restarted = reimport()
     assert (restarted.peak_balance, restarted.current_balance) == (restarted.INITIAL_CAPITAL,) * 2
 

@@ -62,14 +62,14 @@ RISK_FILE = "risk_state.json"
 def load_risk_state():
     """Saved balance/peak, ignored when it was written in the other mode (paper vs live)."""
     try:
-        with open(RISK_FILE) as f:
+        with open(RISK_FILE, encoding="utf-8") as f:
             saved = json.load(f)
     except (OSError, ValueError):
         return {}
     return saved if saved.get("simulation") == SIMULATION_MODE else {}
 
 def save_risk_state():
-    with open(RISK_FILE, "w") as f:
+    with open(RISK_FILE, "w", encoding="utf-8") as f:
         json.dump({"simulation": SIMULATION_MODE, "balance": current_balance, "peak": peak_balance}, f)
 
 _saved = load_risk_state()

@@ -34,8 +34,8 @@ sources:
     flow: true                     # no print on a non-trading day means zero flow
     url: https://www.tftc.io/bitcoin-etf-flows/data.json
     rows_key: days                 # verified 30/10/2026: the payload is a dict, the rows are under `days`
-    date_key: date                 # UNVERIFIED: if wrong, `verify` prints the first row of `days`
-    value_key: netFlow             # UNVERIFIED (daily net flow)
+    date_key: date                 # verified 30/10/2026 from a real row
+    value_key: netFlowUsd          # verified 30/10/2026: daily net flow in USD
   mnav:
     lag_days: 1
     ffill_days: 35

@@ -309,3 +309,13 @@ def test_flag_rates_count_on_days_over_days_with_data_and_skip_missing(cfg):
     assert list(rates.index) == ["stress.fng", "stress.mnav"]  # only stress/recovery flags
     assert rates.loc["stress.fng"].tolist() == ["2/3", "3/6"]
     assert rates.loc["stress.mnav"].tolist() == ["0/0", "1/3"]  # missing days are not counted as off
+
+
+def test_backtest_run_prints_the_report_and_saves_per_day_verdicts(cfg, monkeypatch, capsys):
+    data = synthetic_data()
+    monkeypatch.setattr(sources, "load_all", lambda cfg, offline=False: (data, {"price": "ok"}))
+    cfg["backtest"]["milestones"] = {"panic": ["2023-01-01", "2023-01-31"]}
+    days = backtest.run(cfg)
+    out = capsys.readouterr().out
+    assert "all_days" in out and "Stress ON on" in out and "IN-SAMPLE" in out
+    assert Path(cfg["paths"]["backtest"]).exists() and len(days) > 1000

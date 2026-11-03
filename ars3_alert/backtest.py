@@ -4,6 +4,7 @@ The milestone windows come from the 27/10/2026 research note, so every result he
 It shows whether the pipeline reproduces what the note says; it is not evidence that the rules predict.
 """
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -70,6 +71,7 @@ def run(cfg, offline=False):
         raise sources.SourceError(f"no price data: {status['price']}")
     values, flags = indicators.compute(data, cfg)
     days = replay(flags, cfg)
+    Path(cfg["paths"]["backtest"]).parent.mkdir(parents=True, exist_ok=True)
     days.join(values).join(flags.add_prefix("f.")).to_csv(cfg["paths"]["backtest"])
 
     first_valid = flags.apply(lambda c: c.first_valid_index())

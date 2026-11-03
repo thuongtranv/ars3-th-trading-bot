@@ -23,7 +23,7 @@ def synthetic_data(n=1500, seed=1):
     rng = np.random.default_rng(seed)
     idx = pd.date_range("2021-01-01", periods=n, freq="D")
     price = random_walk_ohlcv(n, seed, "2021-01-01", "D").set_index("timestamp")[["open", "high", "low", "close", "volume"]]
-    etf_days = idx[idx.dayofweek < 5][-900:]
+    etf_days = idx[idx.day_of_week < 5][-900:]
     return {
         "price": price,
         "fng": pd.Series(rng.integers(0, 100, n).astype(float), idx),
@@ -263,3 +263,23 @@ def test_lth_loss_flag_does_not_depend_on_the_sign_convention(cfg):
     flags = [indicators.compute({**data, "onchain.lth_realized_loss": sign * loss}, cfg)[1]["stress.lth_loss"] for sign in (1, -1)]
     pd.testing.assert_series_equal(flags[0], flags[1])
     assert flags[0].notna().any()
+
+
+@pytest.mark.parametrize("raw, encoding", [
+    ("date,mnav\n2026-10-30,0.97\n2026-10-31,1.02\n", "utf-8"),
+    ("date,mnav\n2026-10-30,0.97\n2026-10-31,1.02\n", "utf-8-sig"),            # Notepad / Excel BOM
+    (" Date ; mNAV \n2026-10-30;0,97\n2026-10-31;1,02\n", "utf-8"),             # Excel in a comma-decimal locale
+])
+def test_manual_mnav_file_tolerates_bom_delimiter_and_decimal_comma(cfg, tmp_path, raw, encoding):
+    path = tmp_path / "mnav.csv"
+    path.write_bytes(raw.encode(encoding))
+    cfg["sources"]["mnav"]["path"] = str(path)
+    assert sources.fetch_mnav(cfg).tolist() == [0.97, 1.02]
+
+
+def test_manual_mnav_file_with_wrong_header_names_the_columns_it_found(cfg, tmp_path):
+    path = tmp_path / "mnav.csv"
+    path.write_text("day,value\n2026-10-30,0.97\n", encoding="utf-8")
+    cfg["sources"]["mnav"]["path"] = str(path)
+    with pytest.raises(sources.SourceError, match=r"found \['day', 'value'\]"):
+        sources.fetch_mnav(cfg)

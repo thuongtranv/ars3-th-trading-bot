@@ -135,9 +135,14 @@ def fetch_mnav(cfg):
     path = Path(cfg["sources"]["mnav"]["path"])
     if not path.exists():
         raise SourceError(f"mnav: manual file {path} not found (header: date,mnav)")
+    # utf-8-sig drops an Excel/Notepad BOM; sep=None accepts "," or ";" (Excel in some locales saves ";")
+    df = pd.read_csv(path, encoding="utf-8-sig", sep=None, engine="python", dtype=str)
+    df.columns = df.columns.str.strip().str.lower()
+    if not {"date", "mnav"} <= set(df.columns):
+        raise SourceError(f"mnav: {path} needs the columns date,mnav; found {list(df.columns)}")
     with _unexpected_payload("mnav"):
-        df = pd.read_csv(path)
-        return _daily(pd.to_datetime(df["date"]), df["mnav"])
+        values = pd.to_numeric(df["mnav"].str.strip().str.replace(",", ".", regex=False))
+        return _daily(pd.to_datetime(df["date"].str.strip()), values)
 
 
 def fetch_onchain(cfg, metric):

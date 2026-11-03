@@ -314,7 +314,7 @@ def test_flag_rates_count_on_days_over_days_with_data_and_skip_missing(cfg):
 def test_backtest_run_prints_the_report_and_saves_per_day_verdicts(cfg, monkeypatch, capsys):
     data = synthetic_data()
     monkeypatch.setattr(sources, "load_all", lambda cfg, offline=False: (data, {"price": "ok"}))
-    cfg["backtest"]["milestones"] = {"panic": ["2023-01-01", "2023-01-31"]}
+    cfg["backtest"]["milestones"] = {"panic": ["2023-01-01", "2023-01-31"], "bottom": ["2023-06-01", "2023-06-30"]}
     days = backtest.run(cfg)
     out = capsys.readouterr().out
     assert "all_days" in out and "Stress ON on" in out and "IN-SAMPLE" in out

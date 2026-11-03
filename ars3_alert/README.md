@@ -40,7 +40,10 @@ Use Python 3.13 inside the project's `.venv` (`.\.venv\Scripts\python.exe -m ars
 ## Before trusting an alert
 
 1. `verify` first. Fields marked `UNVERIFIED` in `config.yaml` (ETF JSON keys, the on-chain endpoints) are guesses; fix
-   them from what `verify` prints. `sources.mnav` needs a manual `data/mnav.csv` (`date,mnav`).
+   them from what `verify` prints. `sources.mnav` needs a manual `data/mnav.csv` (`date,mnav`, one real reading per
+   line; never a placeholder, a made-up value feeds the stress cluster). No free daily mNAV history was found
+   (checked 3/11/2026), so the backtest runs without the mNAV flag (4 of 6 flags) and live runs use 4 of 7 once you
+   keep the file current (a reading is carried 35 days). Use one definition throughout, e.g. Strategy's own mNAV.
 2. `run.shadow: true` prefixes every message with `[SHADOW]`. The state changes only a few times per cycle, so a few weeks
    of shadow runs validates the pipeline (fresh data, how many flags are missing, no flapping), not signal quality.
 3. Every threshold is a hypothesis from a note written after the events (n = 3-5 cycles). `backtest` is in-sample by

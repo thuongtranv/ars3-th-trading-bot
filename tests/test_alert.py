@@ -295,3 +295,17 @@ def test_onchain_metric_lag_overrides_the_source_default(cfg):
     cfg["sources"]["onchain"]["metrics"]["lth_realized_loss"]["lag_days"] = 1
     x = indicators.aligned(data, cfg, idx)
     assert x["onchain.sth_cost_basis"].iloc[5] == 1.0 and x["onchain.lth_realized_loss"].iloc[5] == 4.0
+
+
+def test_flag_rates_count_on_days_over_days_with_data_and_skip_missing(cfg):
+    idx = pd.date_range("2026-01-01", periods=6)
+    flags = pd.DataFrame({
+        "stress.fng": pd.array([True, True, False, False, True, False], dtype="boolean"),
+        "stress.mnav": pd.array([pd.NA, pd.NA, pd.NA, True, False, False], dtype="boolean"),
+        "phase.top_zone": pd.array([True] * 6, dtype="boolean"),
+    }, index=idx)
+    cfg["backtest"]["milestones"] = {"panic": ["2026-01-01", "2026-01-03"]}
+    rates = backtest.flag_rates(flags, cfg)
+    assert list(rates.index) == ["stress.fng", "stress.mnav"]  # only stress/recovery flags
+    assert rates.loc["stress.fng"].tolist() == ["2/3", "3/6"]
+    assert rates.loc["stress.mnav"].tolist() == ["0/0", "1/3"]  # missing days are not counted as off

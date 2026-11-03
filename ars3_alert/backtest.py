@@ -45,6 +45,16 @@ def evaluate(days, cfg):
     return pd.DataFrame(results)
 
 
+def flag_rates(flags, cfg):
+    """Per flag: days on / days with data inside each milestone window and over all history (the base rate)."""
+    cols = [c for c in flags.columns if c.startswith(("stress.", "recovery."))]
+    windows = {name: flags.loc[start:end, cols] for name, (start, end) in cfg["backtest"]["milestones"].items()}
+    windows["all_days"] = flags[cols]
+    return pd.DataFrame({
+        name: [f"{int(w[c].sum())}/{int(w[c].notna().sum())}" for c in cols] for name, w in windows.items()
+    }, index=cols)
+
+
 def false_alarms(days, cfg):
     """Dates where the stress cluster switched on outside the panic and bottom windows."""
     m = cfg["backtest"]["milestones"]
@@ -65,7 +75,11 @@ def run(cfg, offline=False):
     first_valid = flags.apply(lambda c: c.first_valid_index())
     print("IN-SAMPLE: windows come from the 27/10/2026 research note, n = 4 events; this is a pipeline check, not proof.\n")
     print(evaluate(days, cfg).to_string(index=False))
-    print(f"\nStress ON outside the panic/bottom windows: {[d.date().isoformat() for d in false_alarms(days, cfg)]}")
+    print("\nFlag on-days / days with data per window; all_days is the base rate:")
+    print(flag_rates(flags, cfg).to_string())
+    decided = days[days.stress_available >= cfg["stress"]["min_available"]]
+    print(f"\nStress ON on {int(decided.stress_on.sum())} of {len(decided)} days that had a verdict ({decided.stress_on.mean():.1%}).")
+    print(f"Stress ON outside the panic/bottom windows: {[d.date().isoformat() for d in false_alarms(days, cfg)]}")
     print("\nFirst day each flag has data (missing before that, never counted as False):")
     print(pd.to_datetime(first_valid).dt.date.to_string())
     print(f"\nPer-day verdicts saved to {cfg['paths']['backtest']}")

@@ -40,7 +40,8 @@ def aligned(data, cfg, index):
         if src.get("flow"):  # flows: a day without a print means zero, until the data goes stale
             end = s.index.max() + pd.Timedelta(days=src.get("ffill_days", 3))
             s = s.reindex(pd.date_range(s.index.min(), end), fill_value=0.0)
-        s = s.shift(src.get("lag_days", 0), freq="D").reindex(index)
+        lag = src.get("metrics", {}).get(name.partition(".")[2], {}).get("lag_days", src.get("lag_days", 0))  # per-metric override
+        s = s.shift(lag, freq="D").reindex(index)
         cols[name] = s if src.get("flow") else s.ffill(limit=src.get("ffill_days", 3))
     return pd.DataFrame(cols, index=index)
 

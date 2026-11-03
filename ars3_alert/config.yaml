@@ -42,12 +42,13 @@ sources:
     path: data/mnav.csv            # manual file with header: date,mnav
   onchain:
     refresh_hours: 20              # free tier: 15 requests/day for 3 metrics, so reuse a cache younger than this
-    lag_days: 7                    # pessimistic: the free tier may serve data only outside a 7-day window
+    lag_days: 7                    # default per metric; seen 3/11/2026: STH cost basis and true market mean end 7 days back
+    # Free tier history starts ~2022-11 (4 years). Per-metric lag_days overrides the default above.
     base_url: https://api.bitcoin-data.com
     token_env: BGEOMETRICS_API_KEY
     metrics:                       # paths from the BGeometrics free-plan list; value_key null = the one non-date field
       sth_cost_basis:    {path: /v1/sth-realized-price, date_key: d, value_key: null}
-      lth_realized_loss: {path: /v1/realized_loss_lth, date_key: d, value_key: null}
+      lth_realized_loss: {path: /v1/realized_loss_lth, date_key: d, value_key: null, lag_days: 1}  # seen 3/11/2026: data up to yesterday
       true_market_mean:  {path: /v1/true-market-mean, date_key: d, value_key: null}
 
 phase:                             # layer 1: context only, never a trigger

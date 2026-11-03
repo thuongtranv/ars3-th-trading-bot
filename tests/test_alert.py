@@ -269,6 +269,7 @@ def test_lth_loss_flag_does_not_depend_on_the_sign_convention(cfg):
     ("date,mnav\n2026-10-30,0.97\n2026-10-31,1.02\n", "utf-8"),
     ("date,mnav\n2026-10-30,0.97\n2026-10-31,1.02\n", "utf-8-sig"),            # Notepad / Excel BOM
     (" Date ; mNAV \n2026-10-30;0,97\n2026-10-31;1,02\n", "utf-8"),             # Excel in a comma-decimal locale
+    ("2026-10-30,0.97\n2026-10-31,1.02\n", "utf-8"),                            # no header line at all
 ])
 def test_manual_mnav_file_tolerates_bom_delimiter_and_decimal_comma(cfg, tmp_path, raw, encoding):
     path = tmp_path / "mnav.csv"
@@ -277,9 +278,20 @@ def test_manual_mnav_file_tolerates_bom_delimiter_and_decimal_comma(cfg, tmp_pat
     assert sources.fetch_mnav(cfg).tolist() == [0.97, 1.02]
 
 
-def test_manual_mnav_file_with_wrong_header_names_the_columns_it_found(cfg, tmp_path):
+def test_manual_mnav_file_with_wrong_header_names_its_first_line(cfg, tmp_path):
     path = tmp_path / "mnav.csv"
     path.write_text("day,value\n2026-10-30,0.97\n", encoding="utf-8")
     cfg["sources"]["mnav"]["path"] = str(path)
-    with pytest.raises(sources.SourceError, match=r"found \['day', 'value'\]"):
+    with pytest.raises(sources.SourceError, match=r"first line is \['day', 'value'\]"):
         sources.fetch_mnav(cfg)
+
+
+def test_onchain_metric_lag_overrides_the_source_default(cfg):
+    idx = pd.date_range("2026-01-01", periods=10)
+    data = {"price": pd.DataFrame({"close": 1.0}, idx),
+            "onchain.sth_cost_basis": pd.Series(np.arange(10.0), idx),
+            "onchain.lth_realized_loss": pd.Series(np.arange(10.0), idx)}
+    cfg["sources"]["onchain"]["lag_days"] = 4
+    cfg["sources"]["onchain"]["metrics"]["lth_realized_loss"]["lag_days"] = 1
+    x = indicators.aligned(data, cfg, idx)
+    assert x["onchain.sth_cost_basis"].iloc[5] == 1.0 and x["onchain.lth_realized_loss"].iloc[5] == 4.0

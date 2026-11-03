@@ -136,13 +136,16 @@ def fetch_mnav(cfg):
     if not path.exists():
         raise SourceError(f"mnav: manual file {path} not found (header: date,mnav)")
     # utf-8-sig drops an Excel/Notepad BOM; sep=None accepts "," or ";" (Excel in some locales saves ";")
-    df = pd.read_csv(path, encoding="utf-8-sig", sep=None, engine="python", dtype=str)
-    df.columns = df.columns.str.strip().str.lower()
-    if not {"date", "mnav"} <= set(df.columns):
-        raise SourceError(f"mnav: {path} needs the columns date,mnav; found {list(df.columns)}")
+    df = pd.read_csv(path, encoding="utf-8-sig", sep=None, engine="python", dtype=str, header=None)
+    df = df.apply(lambda col: col.str.strip())
+    header = [str(c).lower() for c in df.iloc[0]]
+    if header[:2] == ["date", "mnav"]:
+        df = df.iloc[1:]
+    elif pd.isna(pd.to_datetime(df.iloc[0, 0], errors="coerce")):  # neither a header nor a dated row
+        raise SourceError(f"mnav: {path} needs the columns date,mnav; first line is {list(df.iloc[0])}")
     with _unexpected_payload("mnav"):
-        values = pd.to_numeric(df["mnav"].str.strip().str.replace(",", ".", regex=False))
-        return _daily(pd.to_datetime(df["date"].str.strip()), values)
+        values = pd.to_numeric(df.iloc[:, 1].str.replace(",", ".", regex=False))
+        return _daily(pd.to_datetime(df.iloc[:, 0]), values)
 
 
 def fetch_onchain(cfg, metric):
